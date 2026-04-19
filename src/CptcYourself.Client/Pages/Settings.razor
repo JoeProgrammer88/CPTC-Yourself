@@ -1,4 +1,5 @@
 @page "/settings"
+@using CptcYourself.Client.Models
 @inject CryptoStorageService Crypto
 @inject AppStateService State
 @inject NavigationManager Nav
@@ -7,11 +8,11 @@
 
 <div class="settings-page">
     <h2 class="page-title">⚙️ Settings</h2>
-    <p class="subtitle">Your API key is encrypted with AES-256-GCM using a password you choose and stored only in this browser's IndexedDB — it never leaves your device.</p>
+    <p class="subtitle">Your credentials are encrypted with AES-256-GCM using a password you choose and stored only in this browser's IndexedDB — they never leave your device.</p>
 
     @if (_saved)
     {
-        <div class="alert-success">✅ API key saved and encrypted successfully.</div>
+        <div class="alert-success">✅ Settings saved and encrypted successfully.</div>
     }
     @if (_error is not null)
     {
@@ -19,12 +20,54 @@
     }
 
     <div class="card">
-        <label class="field-label">Google AI Studio API Key</label>
-        <input class="field-input"
-               type="password"
-               placeholder="AIza…"
-               @bind="_apiKey"
-               @bind:event="oninput" />
+        <label class="field-label">API Provider</label>
+        <div class="chip-list" style="margin-bottom:1rem">
+            <button class="chip @(_provider == ApiProvider.AiStudio ? "active" : "")"
+                    @onclick='() => _provider = ApiProvider.AiStudio'>
+                Google AI Studio
+            </button>
+            <button class="chip @(_provider == ApiProvider.VertexAi ? "active" : "")"
+                    @onclick='() => _provider = ApiProvider.VertexAi'>
+                Vertex AI
+            </button>
+        </div>
+
+        @if (_provider == ApiProvider.AiStudio)
+        {
+            <label class="field-label">Google AI Studio API Key</label>
+            <input class="field-input"
+                   type="password"
+                   placeholder="AIza…"
+                   @bind="_secret"
+                   @bind:event="oninput" />
+        }
+        else
+        {
+            <label class="field-label">GCP Project ID</label>
+            <input class="field-input"
+                   type="text"
+                   placeholder="my-gcp-project-123"
+                   @bind="_vertexProjectId"
+                   @bind:event="oninput" />
+
+            <label class="field-label">Location</label>
+            <input class="field-input"
+                   type="text"
+                   placeholder="us-central1"
+                   @bind="_vertexLocation"
+                   @bind:event="oninput" />
+
+            <label class="field-label">Service Account Key JSON</label>
+            <textarea class="field-input"
+                      rows="6"
+                      placeholder='{ "type": "service_account", "project_id": "...", "private_key": "...", ... }'
+                      @bind="_secret"
+                      @bind:event="oninput" />
+            <p style="font-size:0.8rem;color:var(--text-muted,#888);margin-top:0.25rem">
+                Download a service account key JSON from the GCP Console and paste it here.
+                It will be encrypted before storage.
+            </p>
+        }
 
         <label class="field-label">Encryption Password</label>
         <input class="field-input"
@@ -49,8 +92,8 @@
     {
         <div class="card danger-zone">
             <h3>Danger Zone</h3>
-            <p>Remove the stored API key from this browser entirely.</p>
-            <button class="btn-danger" @onclick="ClearAsync" disabled="@_busy">Forget API Key</button>
+            <p>Remove the stored credentials from this browser entirely.</p>
+            <button class="btn-danger" @onclick="ClearAsync" disabled="@_busy">Forget Credentials</button>
         </div>
     }
 
@@ -58,9 +101,12 @@
 </div>
 
 @code {
-    private string _apiKey         = string.Empty;
-    private string _password       = string.Empty;
-    private string _confirmPassword = string.Empty;
+    private ApiProvider _provider        = ApiProvider.AiStudio;
+    private string _secret               = string.Empty;
+    private string _vertexProjectId      = string.Empty;
+    private string _vertexLocation       = "us-central1";
+    private string _password             = string.Empty;
+    private string _confirmPassword      = string.Empty;
     private bool   _busy;
     private bool   _saved;
     private bool   _hasExisting;
@@ -69,7 +115,13 @@
     protected override async Task OnInitializedAsync()
     {
         var existing = await Crypto.LoadSettingsAsync();
-        _hasExisting = existing is not null;
+        if (existing is not null)
+        {
+            _hasExisting    = true;
+            _provider       = existing.Provider;
+            _vertexProjectId = existing.VertexProjectId;
+            _vertexLocation  = existing.VertexLocation;
+        }
     }
 
     private async Task SaveAsync()
@@ -77,17 +129,19 @@
         _error = null;
         _saved = false;
 
-        if (string.IsNullOrWhiteSpace(_apiKey))        { _error = "API key is required."; return; }
+        if (string.IsNullOrWhiteSpace(_secret))        { _error = _provider == ApiProvider.AiStudio ? "API key is required." : "Service account JSON is required."; return; }
+        if (_provider == ApiProvider.VertexAi && string.IsNullOrWhiteSpace(_vertexProjectId)) { _error = "GCP Project ID is required."; return; }
+        if (_provider == ApiProvider.VertexAi && string.IsNullOrWhiteSpace(_vertexLocation))  { _error = "Location is required."; return; }
         if (_password.Length < 8)                      { _error = "Password must be at least 8 characters."; return; }
         if (_password != _confirmPassword)             { _error = "Passwords do not match."; return; }
 
         _busy = true;
         try
         {
-            await Crypto.SaveApiKeyAsync(_apiKey, _password);
-            _saved       = true;
-            _hasExisting = true;
-            _apiKey          = string.Empty;
+            await Crypto.SaveApiKeyAsync(_secret, _password, _provider, _vertexProjectId, _vertexLocation);
+            _saved           = true;
+            _hasExisting     = true;
+            _secret          = string.Empty;
             _password        = string.Empty;
             _confirmPassword = string.Empty;
         }

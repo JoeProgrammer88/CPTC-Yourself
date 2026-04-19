@@ -35,6 +35,16 @@ else
         <!-- Art options -->
         <section class="options-section">
             <div class="option-group">
+                <label class="option-label">Program</label>
+                <select class="field-input" @bind="State.SelectedProgram">
+                    @foreach (var prog in Enum.GetValues<CptcProgram>())
+                    {
+                        <option value="@prog">@prog.ToDisplayName()</option>
+                    }
+                </select>
+            </div>
+
+            <div class="option-group">
                 <label class="option-label">Art Style</label>
                 <div class="chip-list">
                     @foreach (var s in Enum.GetValues<ArtStyle>())
@@ -128,13 +138,13 @@ else
             StateHasChanged();
 
             var prompt = await AI.GenerateImagePromptAsync(
-                base64Photo, State.SelectedStyle, State.SelectedGenre, State.PlainTextApiKey!);
+                base64Photo, State.SelectedStyle, State.SelectedGenre, State.SelectedProgram);
             _promptUsed    = prompt;
 
             _statusMessage = "🎨 Generating your image…";
             StateHasChanged();
 
-            _generatedImageBase64 = await AI.GenerateImageAsync(prompt, State.PlainTextApiKey!);
+            _generatedImageBase64 = await AI.GenerateImageAsync(prompt);
         }
         catch (Exception ex)
         {
