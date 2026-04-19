@@ -1,0 +1,118 @@
+@page "/settings"
+@inject CryptoStorageService Crypto
+@inject AppStateService State
+@inject NavigationManager Nav
+
+<PageTitle>Settings – CPTC Yourself</PageTitle>
+
+<div class="settings-page">
+    <h2 class="page-title">⚙️ Settings</h2>
+    <p class="subtitle">Your API key is encrypted with AES-256-GCM using a password you choose and stored only in this browser's IndexedDB — it never leaves your device.</p>
+
+    @if (_saved)
+    {
+        <div class="alert-success">✅ API key saved and encrypted successfully.</div>
+    }
+    @if (_error is not null)
+    {
+        <div class="alert-error">@_error</div>
+    }
+
+    <div class="card">
+        <label class="field-label">Google AI Studio API Key</label>
+        <input class="field-input"
+               type="password"
+               placeholder="AIza…"
+               @bind="_apiKey"
+               @bind:event="oninput" />
+
+        <label class="field-label">Encryption Password</label>
+        <input class="field-input"
+               type="password"
+               placeholder="Choose a strong password"
+               @bind="_password"
+               @bind:event="oninput" />
+
+        <label class="field-label">Confirm Password</label>
+        <input class="field-input"
+               type="password"
+               placeholder="Repeat password"
+               @bind="_confirmPassword"
+               @bind:event="oninput" />
+
+        <button class="btn-primary" @onclick="SaveAsync" disabled="@_busy">
+            @(_busy ? "Saving…" : "Save & Encrypt")
+        </button>
+    </div>
+
+    @if (_hasExisting)
+    {
+        <div class="card danger-zone">
+            <h3>Danger Zone</h3>
+            <p>Remove the stored API key from this browser entirely.</p>
+            <button class="btn-danger" @onclick="ClearAsync" disabled="@_busy">Forget API Key</button>
+        </div>
+    }
+
+    <button class="btn-ghost" @onclick='() => Nav.NavigateTo("/")'>← Back</button>
+</div>
+
+@code {
+    private string _apiKey         = string.Empty;
+    private string _password       = string.Empty;
+    private string _confirmPassword = string.Empty;
+    private bool   _busy;
+    private bool   _saved;
+    private bool   _hasExisting;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var existing = await Crypto.LoadSettingsAsync();
+        _hasExisting = existing is not null;
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        _saved = false;
+
+        if (string.IsNullOrWhiteSpace(_apiKey))        { _error = "API key is required."; return; }
+        if (_password.Length < 8)                      { _error = "Password must be at least 8 characters."; return; }
+        if (_password != _confirmPassword)             { _error = "Passwords do not match."; return; }
+
+        _busy = true;
+        try
+        {
+            await Crypto.SaveApiKeyAsync(_apiKey, _password);
+            _saved       = true;
+            _hasExisting = true;
+            _apiKey          = string.Empty;
+            _password        = string.Empty;
+            _confirmPassword = string.Empty;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to save: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ClearAsync()
+    {
+        _busy = true;
+        try
+        {
+            await Crypto.ClearSettingsAsync();
+            State.Lock();
+            _hasExisting = false;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

@@ -1,0 +1,75 @@
+@page "/unlock"
+@inject CryptoStorageService Crypto
+@inject AppStateService State
+@inject NavigationManager Nav
+
+<PageTitle>Unlock – CPTC Yourself</PageTitle>
+
+<div class="unlock-page">
+    <h2 class="page-title">🔒 Enter Password</h2>
+    <p class="subtitle">Enter your encryption password to unlock the app for this session.</p>
+
+    @if (_error is not null)
+    {
+        <div class="alert-error">@_error</div>
+    }
+
+    <div class="card unlock-card">
+        <label class="field-label">Password</label>
+        <input class="field-input"
+               type="password"
+               placeholder="Your encryption password"
+               @bind="_password"
+               @bind:event="oninput"
+               @onkeydown="OnKeyDown" />
+
+        <button class="btn-primary" @onclick="UnlockAsync" disabled="@_busy">
+            @(_busy ? "Unlocking…" : "Unlock")
+        </button>
+    </div>
+
+    <button class="btn-ghost" @onclick='() => Nav.NavigateTo("/settings")'>⚙️ Change Settings</button>
+</div>
+
+@code {
+    [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+
+    private string  _password = string.Empty;
+    private bool    _busy;
+    private string? _error;
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await UnlockAsync();
+    }
+
+    private async Task UnlockAsync()
+    {
+        _error = null;
+        if (string.IsNullOrWhiteSpace(_password)) { _error = "Password is required."; return; }
+
+        _busy = true;
+        try
+        {
+            var settings = await Crypto.LoadSettingsAsync();
+            if (settings is null)
+            {
+                Nav.NavigateTo("/settings");
+                return;
+            }
+
+            var key = await Crypto.DecryptApiKeyAsync(settings, _password);
+            State.SetApiKey(key);
+            Nav.NavigateTo(ReturnUrl ?? "/");
+        }
+        catch
+        {
+            _error = "Incorrect password. Please try again.";
+        }
+        finally
+        {
+            _busy = false;
+            _password = string.Empty;
+        }
+    }
+}

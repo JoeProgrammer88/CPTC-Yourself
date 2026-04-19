@@ -1,0 +1,56 @@
+@using CptcYourself.Client.Models
+@inject CameraService Camera
+@inject IJSRuntime JS
+
+<div class="photo-capture">
+    <video id="@_videoId" class="camera-preview" autoplay playsinline muted></video>
+
+    <div class="camera-controls">
+        @if (!_streaming)
+        {
+            <button class="btn-primary" @onclick="StartAsync">📷 Start Camera</button>
+        }
+        else
+        {
+            <button class="btn-primary" @onclick="CaptureAsync" disabled="@Busy">
+                @(Busy ? "Processing…" : "📸 Take Photo")
+            </button>
+            <button class="btn-ghost"  @onclick="StopAsync">✖ Stop Camera</button>
+        }
+    </div>
+
+    @if (CapturedBase64 is not null)
+    {
+        <div class="preview-result">
+            <img src="data:image/jpeg;base64,@CapturedBase64" alt="Captured photo" class="captured-thumb" />
+        </div>
+    }
+</div>
+
+@code {
+    private readonly string _videoId = "camera-video";
+    private bool _streaming;
+
+    [Parameter] public bool    Busy              { get; set; }
+    [Parameter] public string? CapturedBase64    { get; set; }
+    [Parameter] public EventCallback<string> OnPhotoCaptured { get; set; }
+
+    public async Task StartAsync()
+    {
+        await Camera.StartAsync(_videoId);
+        _streaming = true;
+    }
+
+    public async Task StopAsync()
+    {
+        await Camera.StopAsync(_videoId);
+        _streaming = false;
+    }
+
+    private async Task CaptureAsync()
+    {
+        var b64 = await Camera.CapturePhotoAsync(_videoId);
+        CapturedBase64 = b64;
+        await OnPhotoCaptured.InvokeAsync(b64);
+    }
+}

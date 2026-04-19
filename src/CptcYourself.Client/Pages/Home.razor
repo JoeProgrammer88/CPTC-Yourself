@@ -1,0 +1,157 @@
+﻿@page "/"
+@using CptcYourself.Client.Models
+@using CptcYourself.Client.Components
+@inject AppStateService State
+@inject GoogleAiService AI
+@inject NavigationManager Nav
+
+<PageTitle>CPTC Yourself – Career Visualization</PageTitle>
+
+@if (!State.IsUnlocked)
+{
+    <div class="lock-screen">
+        <div class="lock-card">
+            <div class="lock-icon">🏭</div>
+            <h1>CPTC Yourself</h1>
+            <p>See your future in Advanced Manufacturing</p>
+            <button class="btn-primary large" @onclick='() => Nav.NavigateTo("/unlock?returnUrl=/")'>
+                🔓 Unlock to Start
+            </button>
+            <button class="btn-ghost" @onclick='() => Nav.NavigateTo("/settings")'>
+                ⚙️ First time? Set up your API key
+            </button>
+        </div>
+    </div>
+}
+else
+{
+    <div class="home-page">
+        <header class="home-header">
+            <h1>CPTC <span class="accent">Yourself</span></h1>
+            <p class="tagline">Your future in Advanced Manufacturing starts here</p>
+            <button class="btn-icon-sm" @onclick='() => Nav.NavigateTo("/settings")' title="Settings">⚙️</button>
+        </header>
+
+        <!-- Art options -->
+        <section class="options-section">
+            <div class="option-group">
+                <label class="option-label">Art Style</label>
+                <div class="chip-list">
+                    @foreach (var s in Enum.GetValues<ArtStyle>())
+                    {
+                        <button class="chip @(State.SelectedStyle == s ? "active" : "")"
+                                @onclick="() => State.SelectedStyle = s">
+                            @s.ToDisplayName()
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div class="option-group">
+                <label class="option-label">Genre</label>
+                <div class="chip-list">
+                    @foreach (var g in Enum.GetValues<ArtGenre>())
+                    {
+                        <button class="chip @(State.SelectedGenre == g ? "active" : "")"
+                                @onclick="() => State.SelectedGenre = g">
+                            @g.ToDisplayName()
+                        </button>
+                    }
+                </div>
+            </div>
+        </section>
+
+        <!-- Camera -->
+        <section class="capture-section">
+            <PhotoCapture @ref="_capture"
+                          Busy="@_busy"
+                          CapturedBase64="@_capturedPhoto"
+                          OnPhotoCaptured="OnPhotoCaptured" />
+        </section>
+
+        <!-- Status / error -->
+        @if (_statusMessage is not null)
+        {
+            <div class="status-message">@_statusMessage</div>
+        }
+        @if (_error is not null)
+        {
+            <div class="alert-error">@_error</div>
+        }
+
+        <!-- Result -->
+        @if (_generatedImageBase64 is not null)
+        {
+            <section class="result-section">
+                <h2>Your Career Vision ✨</h2>
+                <img src="data:image/png;base64,@_generatedImageBase64"
+                     alt="AI-generated career image"
+                     class="result-image" />
+                <div class="result-actions">
+                    <a href="data:image/png;base64,@_generatedImageBase64"
+                       download="cptc-career.png"
+                       class="btn-primary">⬇️ Download</a>
+                    <button class="btn-ghost" @onclick="Reset">🔄 Try Again</button>
+                </div>
+                @if (_promptUsed is not null)
+                {
+                    <details class="prompt-details">
+                        <summary>View prompt used</summary>
+                        <pre>@_promptUsed</pre>
+                    </details>
+                }
+            </section>
+        }
+    </div>
+}
+
+@code {
+    private PhotoCapture? _capture;
+    private string? _capturedPhoto;
+    private string? _generatedImageBase64;
+    private string? _promptUsed;
+    private string? _statusMessage;
+    private string? _error;
+    private bool    _busy;
+
+    private async Task OnPhotoCaptured(string base64Photo)
+    {
+        _capturedPhoto         = base64Photo;
+        _generatedImageBase64  = null;
+        _promptUsed            = null;
+        _error                 = null;
+        _busy                  = true;
+
+        try
+        {
+            _statusMessage = "🤔 Crafting your career story…";
+            StateHasChanged();
+
+            var prompt = await AI.GenerateImagePromptAsync(
+                base64Photo, State.SelectedStyle, State.SelectedGenre, State.PlainTextApiKey!);
+            _promptUsed    = prompt;
+
+            _statusMessage = "🎨 Generating your image…";
+            StateHasChanged();
+
+            _generatedImageBase64 = await AI.GenerateImageAsync(prompt, State.PlainTextApiKey!);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Something went wrong: {ex.Message}";
+        }
+        finally
+        {
+            _statusMessage = null;
+            _busy          = false;
+        }
+    }
+
+    private void Reset()
+    {
+        _capturedPhoto        = null;
+        _generatedImageBase64 = null;
+        _promptUsed           = null;
+        _error                = null;
+    }
+}
