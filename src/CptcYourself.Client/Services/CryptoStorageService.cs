@@ -23,14 +23,14 @@ public class CryptoStorageService(IJSRuntime js)
     /// <summary>Load the stored (encrypted) settings record, or null if nothing saved yet.</summary>
     public async Task<AppSettings?> LoadSettingsAsync()
     {
-        var result = await js.InvokeAsync<JsonElement?>("cptcInterop.loadSettings");
-        if (result is null || result.Value.ValueKind == JsonValueKind.Null)
+        var result = await js.InvokeAsync<JsonElement>("cptcInterop.loadSettings");
+        if (result.ValueKind == JsonValueKind.Null || result.ValueKind == JsonValueKind.Undefined)
             return null;
         return new AppSettings
         {
-            EncryptedApiKey = result.Value.GetProperty("encryptedApiKey").GetString()!,
-            Salt            = result.Value.GetProperty("salt").GetString()!,
-            Iv              = result.Value.GetProperty("iv").GetString()!
+            EncryptedApiKey = result.GetProperty("encryptedApiKey").GetString()!,
+            Salt            = result.GetProperty("salt").GetString()!,
+            Iv              = result.GetProperty("iv").GetString()!
         };
     }
 
