@@ -3,6 +3,7 @@
 @using CptcYourself.Client.Components
 @inject AppStateService State
 @inject GoogleAiService AI
+@inject CryptoStorageService Crypto
 @inject NavigationManager Nav
 
 <PageTitle>CPTC Yourself – Career Visualization</PageTitle>
@@ -17,9 +18,12 @@
             <button class="btn-primary large" @onclick='() => Nav.NavigateTo("/unlock?returnUrl=/")'>
                 🔓 Unlock to Start
             </button>
-            <button class="btn-ghost" @onclick='() => Nav.NavigateTo("/settings")'>
-                ⚙️ First time? Set up your API key
-            </button>
+            @if (!_credentialsStored)
+            {
+                <button class="btn-ghost" @onclick='() => Nav.NavigateTo("/settings")'>
+                    ⚙️ First time? Set up your API key
+                </button>
+            }
         </div>
     </div>
 }
@@ -34,6 +38,16 @@ else
 
         <!-- Art options -->
         <section class="options-section">
+            <div class="option-group">
+                <label class="option-label">Program</label>
+                <select class="field-input" @bind="State.SelectedProgram">
+                    @foreach (var prog in Enum.GetValues<CptcProgram>())
+                    {
+                        <option value="@prog">@prog.ToDisplayName()</option>
+                    }
+                </select>
+            </div>
+
             <div class="option-group">
                 <label class="option-label">Art Style</label>
                 <div class="chip-list">
@@ -93,13 +107,6 @@ else
                        class="btn-primary">⬇️ Download</a>
                     <button class="btn-ghost" @onclick="Reset">🔄 Try Again</button>
                 </div>
-                @if (_promptUsed is not null)
-                {
-                    <details class="prompt-details">
-                        <summary>View prompt used</summary>
-                        <pre>@_promptUsed</pre>
-                    </details>
-                }
             </section>
         }
     </div>
@@ -109,32 +116,30 @@ else
     private PhotoCapture? _capture;
     private string? _capturedPhoto;
     private string? _generatedImageBase64;
-    private string? _promptUsed;
     private string? _statusMessage;
     private string? _error;
     private bool    _busy;
+    private bool    _credentialsStored;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _credentialsStored = await Crypto.LoadSettingsAsync() is not null;
+    }
 
     private async Task OnPhotoCaptured(string base64Photo)
     {
         _capturedPhoto         = base64Photo;
         _generatedImageBase64  = null;
-        _promptUsed            = null;
         _error                 = null;
         _busy                  = true;
 
         try
         {
-            _statusMessage = "🤔 Crafting your career story…";
+            _statusMessage = "🎨 Generating your career image…";
             StateHasChanged();
 
-            var prompt = await AI.GenerateImagePromptAsync(
-                base64Photo, State.SelectedStyle, State.SelectedGenre, State.PlainTextApiKey!);
-            _promptUsed    = prompt;
-
-            _statusMessage = "🎨 Generating your image…";
-            StateHasChanged();
-
-            _generatedImageBase64 = await AI.GenerateImageAsync(prompt, State.PlainTextApiKey!);
+            _generatedImageBase64 = await AI.GenerateCareerImageAsync(
+                base64Photo, State.SelectedStyle, State.SelectedGenre, State.SelectedProgram);
         }
         catch (Exception ex)
         {
@@ -151,7 +156,6 @@ else
     {
         _capturedPhoto        = null;
         _generatedImageBase64 = null;
-        _promptUsed           = null;
         _error                = null;
     }
 }

@@ -8,33 +8,46 @@ public class CryptoStorageService(IJSRuntime js)
 {
     private static readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);
 
-    /// <summary>Encrypt apiKey with password, persist to IndexedDB, return the record.</summary>
-    public async Task<AppSettings> SaveApiKeyAsync(string apiKey, string password)
+    /// <summary>Encrypt the secret with password, persist to IndexedDB, return the record.</summary>
+    public async Task<AppSettings> SaveApiKeyAsync(string secret, string password,
+        ApiProvider provider = ApiProvider.AiStudio)
     {
-        var result = await js.InvokeAsync<JsonElement>("cptcInterop.saveApiKey", apiKey, password);
+        var result = await js.InvokeAsync<JsonElement>("cptcInterop.saveApiKey",
+            secret, password, provider.ToString());
+
         return new AppSettings
         {
             EncryptedApiKey = result.GetProperty("encryptedApiKey").GetString()!,
             Salt            = result.GetProperty("salt").GetString()!,
-            Iv              = result.GetProperty("iv").GetString()!
+            Iv              = result.GetProperty("iv").GetString()!,
+            Provider        = provider,
+            VertexProjectId = result.TryGetProperty("vertexProjectId", out var projProp) ? projProp.GetString() ?? "" : "",
+            VertexLocation  = "us-central1"
         };
     }
 
     /// <summary>Load the stored (encrypted) settings record, or null if nothing saved yet.</summary>
     public async Task<AppSettings?> LoadSettingsAsync()
     {
-        var result = await js.InvokeAsync<JsonElement?>("cptcInterop.loadSettings");
-        if (result is null || result.Value.ValueKind == JsonValueKind.Null)
+        var result = await js.InvokeAsync<JsonElement>("cptcInterop.loadSettings");
+        if (result.ValueKind == JsonValueKind.Null || result.ValueKind == JsonValueKind.Undefined)
             return null;
+
+        var providerStr = result.TryGetProperty("provider", out var pProp) ? pProp.GetString() : "AiStudio";
+        var provider    = Enum.TryParse<ApiProvider>(providerStr, out var p) ? p : ApiProvider.AiStudio;
+
         return new AppSettings
         {
-            EncryptedApiKey = result.Value.GetProperty("encryptedApiKey").GetString()!,
-            Salt            = result.Value.GetProperty("salt").GetString()!,
-            Iv              = result.Value.GetProperty("iv").GetString()!
+            EncryptedApiKey = result.GetProperty("encryptedApiKey").GetString()!,
+            Salt            = result.GetProperty("salt").GetString()!,
+            Iv              = result.GetProperty("iv").GetString()!,
+            Provider        = provider,
+            VertexProjectId = result.TryGetProperty("vertexProjectId", out var projProp) ? projProp.GetString() ?? "" : "",
+            VertexLocation  = result.TryGetProperty("vertexLocation",  out var locProp)  ? locProp.GetString()  ?? "us-central1" : "us-central1"
         };
     }
 
-    /// <summary>Decrypt the stored API key. Throws on wrong password.</summary>
+    /// <summary>Decrypt the stored secret. Throws on wrong password.</summary>
     public async Task<string> DecryptApiKeyAsync(AppSettings settings, string password) =>
         await js.InvokeAsync<string>("cptcInterop.decryptApiKey",
             settings.EncryptedApiKey, settings.Salt, settings.Iv, password);

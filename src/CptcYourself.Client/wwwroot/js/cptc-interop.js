@@ -81,18 +81,32 @@ async function deriveKey(password, saltBytes) {
 
 window.cptcInterop = {
 
-    // Encrypt apiKey with password and store result in IndexedDB.
-    // Returns { encryptedApiKey, salt, iv } (all hex strings).
-    async saveApiKey(apiKey, password) {
+    // Encrypt secret with password and store result in IndexedDB.
+    // For Vertex AI, project_id is extracted automatically from the service account JSON.
+    // Returns { encryptedApiKey, salt, iv, provider, vertexProjectId, vertexLocation }.
+    async saveApiKey(secret, password, provider) {
         const salt    = crypto.getRandomValues(new Uint8Array(16));
         const iv      = crypto.getRandomValues(new Uint8Array(12));
         const key     = await deriveKey(password, salt);
         const enc     = new TextEncoder();
-        const cipher  = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(apiKey));
+        const cipher  = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(secret));
+
+        // Auto-extract project_id from service account JSON when using Vertex AI
+        let vertexProjectId = '';
+        if (provider === 'VertexAi') {
+            try {
+                const sa = JSON.parse(secret);
+                vertexProjectId = sa.project_id ?? '';
+            } catch { /* invalid JSON — will surface as an error at runtime */ }
+        }
+
         const record  = {
-            encryptedApiKey: bytesToHex(new Uint8Array(cipher)),
-            salt:            bytesToHex(salt),
-            iv:              bytesToHex(iv)
+            encryptedApiKey:  bytesToHex(new Uint8Array(cipher)),
+            salt:             bytesToHex(salt),
+            iv:               bytesToHex(iv),
+            provider:         provider ?? 'AiStudio',
+            vertexProjectId:  vertexProjectId,
+            vertexLocation:   'us-central1'
         };
         await idbPut(record);
         return record;
@@ -114,9 +128,68 @@ window.cptcInterop = {
         return new TextDecoder().decode(plain);
     },
 
-    // Remove stored settings (reset / forget API key).
+    // Remove stored settings (reset / forget credentials).
     async clearSettings() {
         await idbDelete();
+    },
+
+    // ── Vertex AI access token ─────────────────────────────────────────────────
+
+    // Accepts a service account JSON string, returns a short-lived access token.
+    // Caches the token until 1 minute before expiry.
+    async getVertexAccessToken(serviceAccountJson) {
+        if (window._vertexTokenCache) {
+            const { token, expiry } = window._vertexTokenCache;
+            if (Date.now() < expiry - 60_000) return token;
+        }
+
+        const sa  = JSON.parse(serviceAccountJson);
+        const now = Math.floor(Date.now() / 1000);
+
+        // Build JWT header + payload (base64url encoded)
+        const b64url = obj =>
+            btoa(JSON.stringify(obj))
+                .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+        const header  = { alg: 'RS256', typ: 'JWT' };
+        const payload = {
+            iss:   sa.client_email,
+            scope: 'https://www.googleapis.com/auth/cloud-platform',
+            aud:   'https://oauth2.googleapis.com/token',
+            exp:   now + 3600,
+            iat:   now
+        };
+        const toSign = `${b64url(header)}.${b64url(payload)}`;
+
+        // Import private key (PEM → DER → CryptoKey)
+        const pemBody    = sa.private_key.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
+        const der        = Uint8Array.from(atob(pemBody), c => c.charCodeAt(0));
+        const privateKey = await crypto.subtle.importKey(
+            'pkcs8', der,
+            { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+            false, ['sign']
+        );
+
+        // Sign and build JWT
+        const sig    = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', privateKey, new TextEncoder().encode(toSign));
+        const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig)))
+                           .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        const jwt = `${toSign}.${sigB64}`;
+
+        // Exchange JWT for access token
+        const resp = await fetch('https://oauth2.googleapis.com/token', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body:    `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`
+        });
+        if (!resp.ok) throw new Error(`Vertex token exchange failed: ${await resp.text()}`);
+
+        const data = await resp.json();
+        window._vertexTokenCache = {
+            token:  data.access_token,
+            expiry: (now + data.expires_in) * 1000
+        };
+        return data.access_token;
     },
 
     // ── Camera helpers ─────────────────────────────────────────────────────────

@@ -23,8 +23,35 @@ public enum ArtGenre
     Professional
 }
 
+public enum CptcProgram
+{
+    ComputerProgramming,
+    CyberPhysicalSoftwareEngineering,
+    NetworkOperationsAndSystemsSecurity,
+    CyberSecurity,
+    Mechatronics,
+    MechatronicsEngineeringTechnologyAndAutomation,
+    ManufacturingEngineeringTechnologies,
+    NondestructiveTesting,
+    OperationsManagement
+}
+
 public static class ArtEnumExtensions
 {
+    public static string ToDisplayName(this CptcProgram program) => program switch
+    {
+        CptcProgram.ComputerProgramming                          => "Computer Programming",
+        CptcProgram.CyberPhysicalSoftwareEngineering             => "Cyber-Physical Software Engineering",
+        CptcProgram.NetworkOperationsAndSystemsSecurity          => "Network Operations and Systems Security",
+        CptcProgram.CyberSecurity                               => "Cyber-Security",
+        CptcProgram.Mechatronics                                 => "Mechatronics",
+        CptcProgram.MechatronicsEngineeringTechnologyAndAutomation => "Mechatronics Engineering Technology and Automation",
+        CptcProgram.ManufacturingEngineeringTechnologies         => "Manufacturing Engineering Technologies",
+        CptcProgram.NondestructiveTesting                        => "Nondestructive Testing",
+        CptcProgram.OperationsManagement                         => "Operations Management",
+        _                                                        => program.ToString()
+    };
+
     public static string ToDisplayName(this ArtStyle style) => style switch
     {
         ArtStyle.OilPainting      => "Oil Painting",

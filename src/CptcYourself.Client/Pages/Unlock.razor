@@ -59,7 +59,7 @@
             }
 
             var key = await Crypto.DecryptApiKeyAsync(settings, _password);
-            State.SetApiKey(key);
+            State.SetCredentials(key, settings.Provider, settings.VertexProjectId, settings.VertexLocation);
             Nav.NavigateTo(ReturnUrl ?? "/");
         }
         catch
