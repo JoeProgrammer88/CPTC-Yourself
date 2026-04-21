@@ -32,6 +32,13 @@
             </button>
         </div>
 
+        @if (_hasExisting)
+        {
+            <div class="alert-success" style="margin-bottom:1rem">
+                ✅ Credentials are already stored for this browser. Fill in the fields below to overwrite them.
+            </div>
+        }
+
         @if (_provider == ApiProvider.AiStudio)
         {
             <label class="field-label">Google AI Studio API Key</label>
@@ -79,7 +86,7 @@
         <div class="card danger-zone">
             <h3>Danger Zone</h3>
             <p>Remove the stored credentials from this browser entirely.</p>
-            <button class="btn-danger" @onclick="ClearAsync" disabled="@_busy">Forget Credentials</button>
+            <button class="btn-danger" @onclick="ClearAsync" disabled="@(_busy || !_hasExisting)">Forget Credentials</button>
         </div>
     }
 

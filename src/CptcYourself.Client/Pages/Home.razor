@@ -3,6 +3,7 @@
 @using CptcYourself.Client.Components
 @inject AppStateService State
 @inject GoogleAiService AI
+@inject CryptoStorageService Crypto
 @inject NavigationManager Nav
 
 <PageTitle>CPTC Yourself – Career Visualization</PageTitle>
@@ -17,9 +18,12 @@
             <button class="btn-primary large" @onclick='() => Nav.NavigateTo("/unlock?returnUrl=/")'>
                 🔓 Unlock to Start
             </button>
-            <button class="btn-ghost" @onclick='() => Nav.NavigateTo("/settings")'>
-                ⚙️ First time? Set up your API key
-            </button>
+            @if (!_credentialsStored)
+            {
+                <button class="btn-ghost" @onclick='() => Nav.NavigateTo("/settings")'>
+                    ⚙️ First time? Set up your API key
+                </button>
+            }
         </div>
     </div>
 }
@@ -123,6 +127,12 @@ else
     private string? _statusMessage;
     private string? _error;
     private bool    _busy;
+    private bool    _credentialsStored;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _credentialsStored = await Crypto.LoadSettingsAsync() is not null;
+    }
 
     private async Task OnPhotoCaptured(string base64Photo)
     {

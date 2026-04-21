@@ -44,8 +44,9 @@ article.content { padding: 1.5rem; flex: 1; }
 
 /* Cards */
 .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; margin-bottom: 1.25rem; }
-.danger-zone { border-color: var(--danger); }
+.danger-zone { border-color: var(--danger); background: rgba(239,68,68,.06); }
 .danger-zone h3 { color: var(--danger) !important; }
+.danger-zone p  { color: var(--text-primary) !important; }
 
 /* Buttons */
 button, .btn-primary, .btn-ghost, .btn-danger { border: none; border-radius: var(--radius); cursor: pointer; font-size: .95rem; font-weight: 600; padding: .55rem 1.4rem; transition: filter .15s, transform .1s; }
