@@ -13,16 +13,8 @@ namespace CptcYourself.Client.Services;
 /// </summary>
 public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService state)
 {
-    
-    private const string AiStudioGeminiModel = "gemini-2.0-flash";
-    private const string AiStudioImagenModel = "imagen-3.0-generate-002";
-    
-    // Model Names for Vertex AI: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions
-    private const string VertexGeminiModel   = "gemini-2.0-flash-001";
-    private const string VertexImagenModel   = "imagen-3.0-generate-001";
-
-    private string GeminiModel => state.Provider == ApiProvider.VertexAi ? VertexGeminiModel : AiStudioGeminiModel;
-    private string ImagenModel => state.Provider == ApiProvider.VertexAi ? VertexImagenModel : AiStudioImagenModel;
+    private const string GeminiModel = "gemini-2.5-flash-lite";
+    private const string ImagenModel = "imagen-3.0-generate-002";
 
     public Task<string> GenerateImagePromptAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program) =>
         state.Provider == ApiProvider.VertexAi
