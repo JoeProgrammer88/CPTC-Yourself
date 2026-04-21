@@ -1,6 +1,6 @@
 # CPTC Yourself
 
-**CPTC Yourself** is a browser-based Blazor WebAssembly application that lets students at the Center for Precision Technology and Careers (CPTC) take a selfie and see themselves thriving in a career that matches their chosen program of study. Using Google's Gemini and Imagen 3 AI models, the app generates a career-inspiration image styled to the user's preferred art style and genre.
+**CPTC Yourself** is a browser-based Blazor WebAssembly application that lets students in the Center for Advanced Manufacturing Technologies (CAMT) building at Clover Park Technical College (CPTC) take a selfie and see themselves thriving in a career that matches their chosen program of study. Using Google's Gemini and Imagen 3 AI models, the app generates a career-inspiration image styled to the user's preferred art style and genre.
 
 All API credentials are encrypted with AES-256-GCM using a password the user chooses and stored only in the browser's IndexedDB — nothing is ever sent to a server.
 
