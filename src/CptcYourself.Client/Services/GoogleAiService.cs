@@ -8,70 +8,65 @@ using CptcYourself.Client.Models;
 namespace CptcYourself.Client.Services;
 
 /// <summary>
-/// Calls Google AI Studio (Gemini + Imagen) or Vertex AI APIs directly from the browser.
-/// Reads credentials and provider from AppStateService.
+/// Calls Google AI Studio or Vertex AI to produce a career-inspiration image.
+///
+/// AI Studio  → single-step: Gemini 2.5 Flash native image generation
+///              (responseModalities: ["IMAGE"]; webcam photo fed directly in)
+///
+/// Vertex AI  → two-step: Gemini generates a rich image prompt from the photo,
+///              then Imagen 3 (capability model) renders the image using the
+///              webcam photo as a SUBJECT reference so the person's face and
+///              likeness appear in the output.
+///              (Vertex AI does not yet support Gemini multi-modal output.)
 /// </summary>
 public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService state)
 {
-    private const string GeminiModel = "gemini-2.5-flash-lite";
-    private const string ImagenModel = "imagen-3.0-generate-002";
+    private const string GeminiModel = "gemini-2.5-flash";
+    // imagen-3.0-capability-001 supports subject/style reference images;
+    // imagen-3.0-generate-002 does not.
+    private const string ImagenModel = "imagen-3.0-capability-001";
 
-    public Task<string> GenerateImagePromptAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program) =>
+    public Task<string> GenerateCareerImageAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program) =>
         state.Provider == ApiProvider.VertexAi
-            ? GenerateImagePromptVertexAsync(photoBase64, style, genre, program)
-            : GenerateImagePromptAiStudioAsync(photoBase64, style, genre, program);
+            ? GenerateCareerImageVertexAsync(photoBase64, style, genre, program)
+            : GenerateCareerImageAiStudioAsync(photoBase64, style, genre, program);
 
-    public Task<string> GenerateImageAsync(string prompt) =>
-        state.Provider == ApiProvider.VertexAi
-            ? GenerateImageVertexAsync(prompt)
-            : GenerateImageAiStudioAsync(prompt);
+    // ── AI Studio: single-step Gemini native image generation ─────────────────
 
-    // ── AI Studio ─────────────────────────────────────────────────────────────
-
-    private async Task<string> GenerateImagePromptAiStudioAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
+    private async Task<string> GenerateCareerImageAiStudioAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
     {
-        var body = BuildGeminiRequestBody(photoBase64, style, genre, program);
+        var body = BuildGeminiImageRequestBody(photoBase64, style, genre, program);
         var url  = $"https://generativelanguage.googleapis.com/v1beta/models/{GeminiModel}:generateContent?key={state.PlainTextApiKey}";
 
         var response = await http.PostAsJsonAsync(url, body);
-        await EnsureSuccessAsync(response, "Gemini (prompt generation)");
-        return await ParseGeminiPromptAsync(response);
+        await EnsureSuccessAsync(response, "Gemini (image generation)");
+        return await ParseGeminiImageResponseAsync(response);
     }
 
-    private async Task<string> GenerateImageAiStudioAsync(string prompt)
+    // ── Vertex AI: two-step Gemini prompt → Imagen 3 ─────────────────────────
+
+    private async Task<string> GenerateCareerImageVertexAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
     {
-        var body = BuildImagenRequestBody(prompt);
-        var url  = $"https://generativelanguage.googleapis.com/v1beta/models/{ImagenModel}:predict?key={state.PlainTextApiKey}";
+        // Step 1 – ask Gemini to craft a detailed image prompt from the photo
+        var promptBody = BuildGeminiPromptRequestBody(photoBase64, style, genre, program);
+        var promptUrl  = $"https://{state.VertexLocation}-aiplatform.googleapis.com/v1/projects/{state.VertexProjectId}" +
+                         $"/locations/{state.VertexLocation}/publishers/google/models/{GeminiModel}:generateContent";
 
-        var response = await http.PostAsJsonAsync(url, body);
-        await EnsureSuccessAsync(response, "Imagen (image generation)");
-        return await ParseImagenResponseAsync(response);
-    }
+        var promptReq  = await BuildVertexRequestAsync(promptUrl, promptBody);
+        var promptResp = await http.SendAsync(promptReq);
+        await EnsureSuccessAsync(promptResp, "Gemini via Vertex (prompt generation)");
+        var imagePrompt = await ParseGeminiTextResponseAsync(promptResp);
 
-    // ── Vertex AI ─────────────────────────────────────────────────────────────
+        // Step 2 – render with Imagen 3, using the webcam photo as a subject
+        //           reference so the output depicts the actual person
+        var imagenBody = BuildImagenSubjectRequestBody(imagePrompt, photoBase64);
+        var imagenUrl  = $"https://{state.VertexLocation}-aiplatform.googleapis.com/v1/projects/{state.VertexProjectId}" +
+                         $"/locations/{state.VertexLocation}/publishers/google/models/{ImagenModel}:predict";
 
-    private async Task<string> GenerateImagePromptVertexAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
-    {
-        var body  = BuildGeminiRequestBody(photoBase64, style, genre, program);
-        var url   = $"https://{state.VertexLocation}-aiplatform.googleapis.com/v1/projects/{state.VertexProjectId}" +
-                    $"/locations/{state.VertexLocation}/publishers/google/models/{GeminiModel}:generateContent";
-
-        var request = await BuildVertexRequestAsync(url, body);
-        var response = await http.SendAsync(request);
-        await EnsureSuccessAsync(response, "Gemini via Vertex (prompt generation)");
-        return await ParseGeminiPromptAsync(response);
-    }
-
-    private async Task<string> GenerateImageVertexAsync(string prompt)
-    {
-        var body = BuildImagenRequestBody(prompt);
-        var url  = $"https://{state.VertexLocation}-aiplatform.googleapis.com/v1/projects/{state.VertexProjectId}" +
-                   $"/locations/{state.VertexLocation}/publishers/google/models/{ImagenModel}:predict";
-
-        var request = await BuildVertexRequestAsync(url, body);
-        var response = await http.SendAsync(request);
-        await EnsureSuccessAsync(response, "Imagen via Vertex (image generation)");
-        return await ParseImagenResponseAsync(response);
+        var imagenReq  = await BuildVertexRequestAsync(imagenUrl, imagenBody);
+        var imagenResp = await http.SendAsync(imagenReq);
+        await EnsureSuccessAsync(imagenResp, "Imagen via Vertex (image generation)");
+        return await ParseImagenResponseAsync(imagenResp);
     }
 
     private async Task<HttpRequestMessage> BuildVertexRequestAsync(string url, object body)
@@ -86,20 +81,69 @@ public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService sta
         return request;
     }
 
-    // ── Shared request / response helpers ────────────────────────────────────
+    // ── Request builders ──────────────────────────────────────────────────────
 
-    private static object BuildGeminiRequestBody(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
+    /// <summary>
+    /// AI Studio request body: asks Gemini to output an image directly.
+    /// responseModalities: ["IMAGE"] is not supported on Vertex AI.
+    /// </summary>
+    private static object BuildGeminiImageRequestBody(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
+    {
+        var systemInstruction =
+            "You are a career-inspiration artist for the Center for Precision Technology and " +
+            "Careers (CPTC). Using the person's face and likeness from the provided photo, " +
+            "generate a vivid image that faithfully depicts this specific person thriving in a " +
+            $"{program.ToDisplayName()} career. " +
+            $"Render the image in a {style.ToDisplayName()} art style with a {genre.ToDisplayName()} tone. " +
+            "Show a realistic, detailed professional environment appropriate for that program " +
+            "(e.g. the tools, machinery, screens, or lab setting a graduate would work in). " +
+            "Preserve the person's facial features and likeness. " +
+            "Capture a strong sense of pride, confidence, and accomplishment.";
+
+        return new
+        {
+            system_instruction = new { parts = new[] { new { text = systemInstruction } } },
+            contents = new[]
+            {
+                new
+                {
+                    role  = "user",
+                    parts = new object[]
+                    {
+                        new { inline_data = new { mime_type = "image/jpeg", data = photoBase64 } },
+                        new
+                        {
+                            text = $"Generate a {style.ToDisplayName()} career image showing this person " +
+                                   $"working in the {program.ToDisplayName()} field."
+                        }
+                    }
+                }
+            },
+            generationConfig = new
+            {
+                responseModalities = new[] { "IMAGE" },
+                temperature        = 1.0
+            }
+        };
+    }
+
+    /// <summary>
+    /// Vertex AI request body: asks Gemini to write a detailed image-gen prompt
+    /// (text only — no responseModalities) that Imagen 3 will render.
+    /// </summary>
+    private static object BuildGeminiPromptRequestBody(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
     {
         var systemInstruction =
             "You are a creative director specialising in career-inspiration artwork for the " +
-            "Center for Precision Technology and Careers (CPTC) at a community college. " +
-            "Given a photo of a person and their chosen program of study, create a vivid " +
-            "image-generation prompt that shows that person thriving in a career directly " +
-            "related to their program. " +
-            "The prompt must specify the art style and genre supplied by the user, vividly " +
-            $"describe an environment specific to the '{program.ToDisplayName()}' program " +
-            "(e.g. the tools, machinery, screens, or lab setting a graduate of that program " +
-            "would work in), and capture a sense of pride and accomplishment. " +
+            "Center for Precision Technology and Careers (CPTC). " +
+            "Given a photo of a person and their chosen program of study, write a vivid " +
+            "image-generation prompt that shows that specific person thriving in a career " +
+            $"related to the '{program.ToDisplayName()}' program. " +
+            $"The prompt must specify the '{style.ToDisplayName()}' art style and '{genre.ToDisplayName()}' genre, " +
+            "describe the exact professional environment (tools, machinery, screens, or lab), " +
+            "include the person's notable physical features from the photo (hair colour, " +
+            "approximate age, distinguishing features) so the image closely resembles them, " +
+            "and convey pride and accomplishment. " +
             "Return ONLY the image-generation prompt — no preamble, no explanation.";
 
         return new
@@ -113,7 +157,11 @@ public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService sta
                     parts = new object[]
                     {
                         new { inline_data = new { mime_type = "image/jpeg", data = photoBase64 } },
-                        new { text = $"Program: {program.ToDisplayName()}. Art style: {style.ToDisplayName()}. Genre: {genre.ToDisplayName()}. Create the image-generation prompt now." }
+                        new
+                        {
+                            text = $"Program: {program.ToDisplayName()}. Style: {style.ToDisplayName()}. " +
+                                   $"Genre: {genre.ToDisplayName()}. Write the image-generation prompt now."
+                        }
                     }
                 }
             },
@@ -121,13 +169,53 @@ public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService sta
         };
     }
 
-    private static object BuildImagenRequestBody(string prompt) => new
+    /// <summary>
+    /// Imagen 3 capability model request with the webcam photo as a SUBJECT
+    /// reference image so the generated image preserves the person's likeness.
+    /// </summary>
+    private static object BuildImagenSubjectRequestBody(string prompt, string photoBase64) => new
     {
-        instances  = new[] { new { prompt } },
+        instances = new[]
+        {
+            new
+            {
+                prompt          = prompt,
+                referenceImages = new[]
+                {
+                    new
+                    {
+                        referenceType  = "REFERENCE_TYPE_SUBJECT",
+                        referenceId    = 1,
+                        referenceImage = new { bytesBase64Encoded = photoBase64 },
+                        subjectImageConfig = new { subjectType = "SUBJECT_TYPE_PERSON" }
+                    }
+                }
+            }
+        },
         parameters = new { sampleCount = 1, aspectRatio = "1:1", safetyFilterLevel = "block_few" }
     };
 
-    private static async Task<string> ParseGeminiPromptAsync(HttpResponseMessage response)
+    // ── Response parsers ──────────────────────────────────────────────────────
+
+    private static async Task<string> ParseGeminiImageResponseAsync(HttpResponseMessage response)
+    {
+        using var doc  = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var       parts = doc.RootElement
+                             .GetProperty("candidates")[0]
+                             .GetProperty("content")
+                             .GetProperty("parts");
+
+        foreach (var part in parts.EnumerateArray())
+        {
+            if (part.TryGetProperty("inlineData", out var inlineData))
+                return inlineData.GetProperty("data").GetString()
+                       ?? throw new InvalidOperationException("Empty image bytes in Gemini response.");
+        }
+
+        throw new InvalidOperationException("Gemini returned no image in its response.");
+    }
+
+    private static async Task<string> ParseGeminiTextResponseAsync(HttpResponseMessage response)
     {
         using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
         return (doc.RootElement

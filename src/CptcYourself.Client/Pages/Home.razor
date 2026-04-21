@@ -107,13 +107,6 @@ else
                        class="btn-primary">⬇️ Download</a>
                     <button class="btn-ghost" @onclick="Reset">🔄 Try Again</button>
                 </div>
-                @if (_promptUsed is not null)
-                {
-                    <details class="prompt-details">
-                        <summary>View prompt used</summary>
-                        <pre>@_promptUsed</pre>
-                    </details>
-                }
             </section>
         }
     </div>
@@ -123,7 +116,6 @@ else
     private PhotoCapture? _capture;
     private string? _capturedPhoto;
     private string? _generatedImageBase64;
-    private string? _promptUsed;
     private string? _statusMessage;
     private string? _error;
     private bool    _busy;
@@ -138,23 +130,16 @@ else
     {
         _capturedPhoto         = base64Photo;
         _generatedImageBase64  = null;
-        _promptUsed            = null;
         _error                 = null;
         _busy                  = true;
 
         try
         {
-            _statusMessage = "🤔 Crafting your career story…";
+            _statusMessage = "🎨 Generating your career image…";
             StateHasChanged();
 
-            var prompt = await AI.GenerateImagePromptAsync(
+            _generatedImageBase64 = await AI.GenerateCareerImageAsync(
                 base64Photo, State.SelectedStyle, State.SelectedGenre, State.SelectedProgram);
-            _promptUsed    = prompt;
-
-            _statusMessage = "🎨 Generating your image…";
-            StateHasChanged();
-
-            _generatedImageBase64 = await AI.GenerateImageAsync(prompt);
         }
         catch (Exception ex)
         {
@@ -171,7 +156,6 @@ else
     {
         _capturedPhoto        = null;
         _generatedImageBase64 = null;
-        _promptUsed           = null;
         _error                = null;
     }
 }
