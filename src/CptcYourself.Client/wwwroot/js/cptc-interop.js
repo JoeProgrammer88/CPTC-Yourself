@@ -82,20 +82,31 @@ async function deriveKey(password, saltBytes) {
 window.cptcInterop = {
 
     // Encrypt secret with password and store result in IndexedDB.
+    // For Vertex AI, project_id is extracted automatically from the service account JSON.
     // Returns { encryptedApiKey, salt, iv, provider, vertexProjectId, vertexLocation }.
-    async saveApiKey(secret, password, provider, vertexProjectId, vertexLocation) {
+    async saveApiKey(secret, password, provider) {
         const salt    = crypto.getRandomValues(new Uint8Array(16));
         const iv      = crypto.getRandomValues(new Uint8Array(12));
         const key     = await deriveKey(password, salt);
         const enc     = new TextEncoder();
         const cipher  = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(secret));
+
+        // Auto-extract project_id from service account JSON when using Vertex AI
+        let vertexProjectId = '';
+        if (provider === 'VertexAi') {
+            try {
+                const sa = JSON.parse(secret);
+                vertexProjectId = sa.project_id ?? '';
+            } catch { /* invalid JSON — will surface as an error at runtime */ }
+        }
+
         const record  = {
             encryptedApiKey:  bytesToHex(new Uint8Array(cipher)),
             salt:             bytesToHex(salt),
             iv:               bytesToHex(iv),
-            provider:         provider         ?? 'AiStudio',
-            vertexProjectId:  vertexProjectId  ?? '',
-            vertexLocation:   vertexLocation   ?? 'us-central1'
+            provider:         provider ?? 'AiStudio',
+            vertexProjectId:  vertexProjectId,
+            vertexLocation:   'us-central1'
         };
         await idbPut(record);
         return record;

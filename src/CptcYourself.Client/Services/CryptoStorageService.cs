@@ -10,11 +10,10 @@ public class CryptoStorageService(IJSRuntime js)
 
     /// <summary>Encrypt the secret with password, persist to IndexedDB, return the record.</summary>
     public async Task<AppSettings> SaveApiKeyAsync(string secret, string password,
-        ApiProvider provider = ApiProvider.AiStudio,
-        string vertexProjectId = "", string vertexLocation = "us-central1")
+        ApiProvider provider = ApiProvider.AiStudio)
     {
         var result = await js.InvokeAsync<JsonElement>("cptcInterop.saveApiKey",
-            secret, password, provider.ToString(), vertexProjectId, vertexLocation);
+            secret, password, provider.ToString());
 
         return new AppSettings
         {
@@ -22,8 +21,8 @@ public class CryptoStorageService(IJSRuntime js)
             Salt            = result.GetProperty("salt").GetString()!,
             Iv              = result.GetProperty("iv").GetString()!,
             Provider        = provider,
-            VertexProjectId = vertexProjectId,
-            VertexLocation  = vertexLocation
+            VertexProjectId = result.TryGetProperty("vertexProjectId", out var projProp) ? projProp.GetString() ?? "" : "",
+            VertexLocation  = "us-central1"
         };
     }
 
