@@ -338,13 +338,13 @@ public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService sta
 
     // ── Song generation ───────────────────────────────────────────────────────
 
-    public Task<(string Lyrics, string? AudioBase64, string AudioMimeType)> GenerateSongAsync(
+    public Task<(string Lyrics, string? AudioBase64, string AudioMimeType, string? TtsError)> GenerateSongAsync(
         MusicGenre genre, CptcProgram program, string? name = null) =>
         state.Provider == ApiProvider.VertexAi
             ? GenerateSongVertexAsync(genre, program, name)
             : GenerateSongAiStudioAsync(genre, program, name);
 
-    private async Task<(string Lyrics, string? AudioBase64, string AudioMimeType)> GenerateSongAiStudioAsync(
+    private async Task<(string Lyrics, string? AudioBase64, string AudioMimeType, string? TtsError)> GenerateSongAiStudioAsync(
         MusicGenre genre, CptcProgram program, string? name)
     {
         var textUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{GeminiModel}:generateContent?key={state.PlainTextApiKey}";
@@ -360,18 +360,17 @@ public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService sta
         {
             var firstVerse = ExtractFirstVerse(lyrics);
             var ttsResp = await http.PostAsJsonAsync(ttsUrl, BuildTtsSongBody(firstVerse, genre));
-            if (ttsResp.IsSuccessStatusCode)
-            {
-                var (audioBase64, mimeType) = await ParseGeminiAudioResponseAsync(ttsResp);
-                return (lyrics, audioBase64, mimeType);
-            }
+            await EnsureSuccessAsync(ttsResp, "Gemini (audio synthesis)");
+            var (audioBase64, mimeType) = await ParseGeminiAudioResponseAsync(ttsResp);
+            return (lyrics, audioBase64, mimeType, null);
         }
-        catch { /* TTS failure is non-fatal — return lyrics only */ }
-
-        return (lyrics, null, string.Empty);
+        catch (Exception ex)
+        {
+            return (lyrics, null, string.Empty, ex.Message);
+        }
     }
 
-    private async Task<(string Lyrics, string? AudioBase64, string AudioMimeType)> GenerateSongVertexAsync(
+    private async Task<(string Lyrics, string? AudioBase64, string AudioMimeType, string? TtsError)> GenerateSongVertexAsync(
         MusicGenre genre, CptcProgram program, string? name)
     {
         var geminiUrl = $"https://{state.VertexLocation}-aiplatform.googleapis.com/v1/projects/{state.VertexProjectId}" +
@@ -386,20 +385,85 @@ public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService sta
         var lyrics = await ParseGeminiTextResponseAsync(lyricsResp);
 
         // Step 2 – synthesize only the first verse via TTS (best-effort)
+        // If Gemini TTS is not allowlisted, fall back to Lyria instrumental
         try
         {
             var firstVerse = ExtractFirstVerse(lyrics);
             var ttsReq  = await BuildVertexRequestAsync(ttsUrl, BuildTtsSongBody(firstVerse, genre));
             var ttsResp = await http.SendAsync(ttsReq);
-            if (ttsResp.IsSuccessStatusCode)
+            await EnsureSuccessAsync(ttsResp, "Gemini via Vertex (audio synthesis)");
+            var (audioBase64, mimeType) = await ParseGeminiAudioResponseAsync(ttsResp);
+            return (lyrics, audioBase64, mimeType, null);
+        }
+        catch (HttpRequestException ex) when (ex.Message.Contains("allowlist", StringComparison.OrdinalIgnoreCase))
+        {
+            // Gemini audio not allowlisted — try Lyria for instrumental
+            try
             {
-                var (audioBase64, mimeType) = await ParseGeminiAudioResponseAsync(ttsResp);
-                return (lyrics, audioBase64, mimeType);
+                var (lyriaAudio, lyriaMime) = await GenerateLyriaInstrumentalAsync(genre, lyrics);
+                return (lyrics, lyriaAudio, lyriaMime, null);
+            }
+            catch (Exception lyriaEx)
+            {
+                return (lyrics, null, string.Empty, $"Lyria instrumental failed: {lyriaEx.Message}");
             }
         }
-        catch { /* TTS failure is non-fatal */ }
+        catch (Exception ex)
+        {
+            return (lyrics, null, string.Empty, ex.Message);
+        }
+    }
 
-        return (lyrics, null, string.Empty);
+    private async Task<(string AudioBase64, string MimeType)> GenerateLyriaInstrumentalAsync(
+        MusicGenre genre, string lyrics)
+    {
+        // Lyria uses a global endpoint and a different interactions API shape
+        var url          = $"https://aiplatform.googleapis.com/v1beta1/projects/{state.VertexProjectId}/locations/global/interactions";
+        var musicPrompt  = BuildLyriaPrompt(genre, lyrics);
+        var body         = new
+        {
+            model = "lyria-3-clip-preview",
+            input = new[] { new { type = "text", text = musicPrompt } }
+        };
+        var req  = await BuildVertexRequestAsync(url, body);
+        var resp = await http.SendAsync(req);
+        await EnsureSuccessAsync(resp, "Lyria (instrumental generation)");
+
+        using var doc = await JsonDocument.ParseAsync(await resp.Content.ReadAsStreamAsync());
+        foreach (var output in doc.RootElement.GetProperty("outputs").EnumerateArray())
+        {
+            if (output.TryGetProperty("type", out var t) && t.GetString() == "audio")
+            {
+                var data     = output.GetProperty("data").GetString()
+                               ?? throw new InvalidOperationException("Empty audio data from Lyria.");
+                var mimeType = output.TryGetProperty("mime_type", out var mt)
+                               ? mt.GetString() ?? "audio/mpeg"
+                               : "audio/mpeg";
+                return (data, mimeType);
+            }
+        }
+        throw new InvalidOperationException("Lyria returned no audio output.");
+    }
+
+    private static string BuildLyriaPrompt(MusicGenre genre, string lyrics)
+    {
+        // Extract mood/theme words from lyrics to enrich the prompt
+        var styleDescriptor = genre switch
+        {
+            MusicGenre.Rap        => "hip-hop beat with punchy 808s and a driving rhythm",
+            MusicGenre.Rock       => "driving rock track with electric guitar riffs and live drums",
+            MusicGenre.Country    => "country song with acoustic guitar, fiddle, and warm pedal steel",
+            MusicGenre.Pop        => "upbeat pop track with bright synths, catchy melody, and modern production",
+            MusicGenre.RnB        => "smooth R&B groove with soulful chords and laid-back drums",
+            MusicGenre.Jazz       => "live jazz arrangement with piano, upright bass, and brushed drums",
+            MusicGenre.HipHop     => "boom-bap hip-hop beat with sampled chops and a head-nodding groove",
+            MusicGenre.Electronic => "electronic track with pulsing synths, four-on-the-floor kick, and atmosphere",
+            MusicGenre.Folk       => "folk song with fingerpicked acoustic guitar, light percussion, and warm strings",
+            MusicGenre.Metal      => "heavy metal track with distorted guitars, double-kick drums, and powerful energy",
+            _                     => "instrumental music track"
+        };
+        return $"Instrumental {styleDescriptor}. Motivational, professional, uplifting tone. " +
+               $"No vocals. Suitable as background music for a career inspiration theme.";
     }
 
     /// <summary>

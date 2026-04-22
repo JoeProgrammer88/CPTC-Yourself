@@ -172,6 +172,14 @@ window.cptcInterop = {
         if (url) URL.revokeObjectURL(url);
     },
 
+    // Creates a Blob Object URL for any base64-encoded audio (e.g. audio/mpeg from Lyria).
+    // Use this for formats that don't need conversion (everything except raw PCM).
+    base64ToBlobUrl(base64, mimeType) {
+        const bytes  = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+        const blob   = new Blob([bytes], { type: mimeType });
+        return URL.createObjectURL(blob);
+    },
+
     // ── Vertex AI access token ─────────────────────────────────────────────────
 
     // Accepts a service account JSON string, returns a short-lived access token.

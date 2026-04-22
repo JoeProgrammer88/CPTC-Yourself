@@ -96,12 +96,16 @@ else
                 {
                     <div style="margin-bottom:1rem">
                         <p style="font-size:.85rem; color:var(--text-muted); text-align:center; margin:0 0 .5rem">
-                            🎵 Audio preview — first verse
+                            @((_audioMimeType?.Contains("mpeg") ?? false)
+                                ? "🎸 Instrumental preview — Lyria"
+                                : "🎵 Audio preview — first verse")
                         </p>
                         <audio controls src="@_audioUrl"
                                style="width:100%; border-radius:8px; margin-bottom:0.5rem" />
                         <div class="result-actions">
-                            <a href="@_audioUrl" download="cptc-song.wav" class="btn-primary">
+                            <a href="@_audioUrl"
+                               download="@((_audioMimeType?.Contains("mpeg") ?? false) ? "cptc-instrumental.mp3" : "cptc-song.wav")"
+                               class="btn-primary">
                                 ⬇️ Download Audio
                             </a>
                             <button class="btn-ghost" @onclick="Reset">🔄 Try Again</button>
@@ -113,7 +117,20 @@ else
                     <div class="result-actions" style="margin-bottom:1rem">
                         <button class="btn-ghost" @onclick="Reset">🔄 Try Again</button>
                     </div>
-                    @if (_audioUnavailable)
+                    @if (_ttsError is not null)
+                    {
+                        @if (_ttsError.Contains("allowlist", StringComparison.OrdinalIgnoreCase))
+                        {
+                            <div style="font-size:.85rem; color:var(--text-muted); margin-bottom:0.75rem; text-align:center">
+                                🎵 Audio synthesis requires Vertex AI allowlisting for your project — lyrics only.
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="alert-error">🔊 Audio error: @_ttsError</div>
+                        }
+                    }
+                    else if (_audioUnavailable)
                     {
                         <div style="font-size:.85rem; color:var(--text-muted); margin-bottom:0.75rem; text-align:center">
                             🎵 Audio unavailable — enjoy the lyrics below!
@@ -132,8 +149,10 @@ else
 @code {
     private string? _lyrics;
     private string? _audioUrl;
+    private string? _audioMimeType;
     private string? _statusMessage;
     private string? _error;
+    private string? _ttsError;
     private bool    _busy;
     private bool    _credentialsStored;
     private bool    _audioUnavailable;
@@ -146,8 +165,10 @@ else
 
     private async Task GenerateAsync()
     {
-        _lyrics          = null;
-        _error           = null;
+        _lyrics           = null;
+        _error            = null;
+        _ttsError         = null;
+        _audioMimeType    = null;
         _audioUnavailable = false;
         _busy            = true;
 
@@ -163,19 +184,30 @@ else
             _statusMessage = "✍️ Writing lyrics…";
             StateHasChanged();
 
-            var (lyrics, audioBase64, audioMimeType) =
+            var (lyrics, audioBase64, audioMimeType, ttsError) =
                 await AI.GenerateSongAsync(State.SelectedMusicGenre, State.SelectedProgram, _name.Trim());
 
-            _lyrics = lyrics;
+            _lyrics   = lyrics;
+            _ttsError = ttsError;
 
             if (audioBase64 is not null)
             {
                 _statusMessage = "🔊 Building audio…";
                 StateHasChanged();
 
-                var sampleRate = ParseSampleRate(audioMimeType);
-                _audioUrl = await JS.InvokeAsync<string>(
-                    "cptcInterop.pcmToWavBlobUrl", audioBase64, sampleRate, 1, 16);
+                _audioMimeType = audioMimeType;
+                if (audioMimeType.Contains("mpeg", StringComparison.OrdinalIgnoreCase) ||
+                    audioMimeType.Contains("mp3",  StringComparison.OrdinalIgnoreCase))
+                {
+                    _audioUrl = await JS.InvokeAsync<string>(
+                        "cptcInterop.base64ToBlobUrl", audioBase64, audioMimeType);
+                }
+                else
+                {
+                    var sampleRate = ParseSampleRate(audioMimeType);
+                    _audioUrl = await JS.InvokeAsync<string>(
+                        "cptcInterop.pcmToWavBlobUrl", audioBase64, sampleRate, 1, 16);
+                }
             }
             else
             {
@@ -197,7 +229,9 @@ else
     {
         _lyrics           = null;
         _error            = null;
+        _ttsError         = null;
         _audioUnavailable = false;
+        _audioMimeType    = null;
         // Keep _audioUrl alive until next generate or dispose so the player doesn't break mid-listen
     }
 
