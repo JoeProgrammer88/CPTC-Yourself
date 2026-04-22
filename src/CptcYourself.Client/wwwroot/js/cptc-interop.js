@@ -133,6 +133,53 @@ window.cptcInterop = {
         await idbDelete();
     },
 
+    // ── Audio helpers ──────────────────────────────────────────────────────────
+
+    // Wraps raw signed-16-bit PCM audio (base64-encoded) in a WAV container and
+    // returns a Blob Object URL suitable for use in an <audio> element.
+    // Caller is responsible for revoking the URL via revokeBlobUrl() when done.
+    pcmToWavBlobUrl(pcmBase64, sampleRate, numChannels, bitsPerSample) {
+        const pcm        = Uint8Array.from(atob(pcmBase64), c => c.charCodeAt(0));
+        const headerSize = 44;
+        const buffer     = new ArrayBuffer(headerSize + pcm.length);
+        const view       = new DataView(buffer);
+
+        const write4 = (offset, str) => {
+            for (let i = 0; i < 4; i++) view.setUint8(offset + i, str.charCodeAt(i));
+        };
+
+        write4(0,  'RIFF');
+        view.setUint32(4,  36 + pcm.length,                              true);
+        write4(8,  'WAVE');
+        write4(12, 'fmt ');
+        view.setUint32(16, 16,                                           true); // chunk size (PCM)
+        view.setUint16(20, 1,                                            true); // format (PCM)
+        view.setUint16(22, numChannels,                                  true);
+        view.setUint32(24, sampleRate,                                   true);
+        view.setUint32(28, sampleRate * numChannels * bitsPerSample / 8, true); // byte rate
+        view.setUint16(32, numChannels * bitsPerSample / 8,              true); // block align
+        view.setUint16(34, bitsPerSample,                                true);
+        write4(36, 'data');
+        view.setUint32(40, pcm.length,                                   true);
+        new Uint8Array(buffer, headerSize).set(pcm);
+
+        const blob = new Blob([buffer], { type: 'audio/wav' });
+        return URL.createObjectURL(blob);
+    },
+
+    // Revoke a Blob Object URL created by pcmToWavBlobUrl to free memory.
+    revokeBlobUrl(url) {
+        if (url) URL.revokeObjectURL(url);
+    },
+
+    // Creates a Blob Object URL for any base64-encoded audio (e.g. audio/mpeg from Lyria).
+    // Use this for formats that don't need conversion (everything except raw PCM).
+    base64ToBlobUrl(base64, mimeType) {
+        const bytes  = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+        const blob   = new Blob([bytes], { type: mimeType });
+        return URL.createObjectURL(blob);
+    },
+
     // ── Vertex AI access token ─────────────────────────────────────────────────
 
     // Accepts a service account JSON string, returns a short-lived access token.

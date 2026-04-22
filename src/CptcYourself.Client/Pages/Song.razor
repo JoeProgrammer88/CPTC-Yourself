@@ -1,0 +1,254 @@
+@page "/song"
+@implements IAsyncDisposable
+@using CptcYourself.Client.Models
+@inject AppStateService State
+@inject GoogleAiService AI
+@inject CryptoStorageService Crypto
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<PageTitle>CPTC Yourself – Song Generator</PageTitle>
+
+@if (!State.IsUnlocked)
+{
+    <div class="lock-screen">
+        <div class="lock-card">
+            <div class="lock-icon">🎵</div>
+            <h1>CPTC Yourself</h1>
+            <p>Generate a career-themed song</p>
+            <button class="btn-primary large" @onclick='() => Nav.NavigateTo("/unlock?returnUrl=/song")'>
+                🔓 Unlock to Start
+            </button>
+            @if (!_credentialsStored)
+            {
+                <button class="btn-ghost" @onclick='() => Nav.NavigateTo("/settings")'>
+                    ⚙️ First time? Set up your API key
+                </button>
+            }
+        </div>
+    </div>
+}
+else
+{
+    <div class="home-page">
+        <header class="home-header">
+            <h1>CPTC <span class="accent">Yourself</span></h1>
+            <p class="tagline">Your future in Advanced Manufacturing — in song</p>
+            <button class="btn-icon-sm" @onclick='() => Nav.NavigateTo("/settings")' title="Settings">⚙️</button>
+        </header>
+
+        <!-- Options -->
+        <section class="options-section">
+            <div class="option-group">
+                <label class="option-label">Program</label>
+                <select class="field-input" @bind="State.SelectedProgram">
+                    @foreach (var prog in Enum.GetValues<CptcProgram>())
+                    {
+                        <option value="@prog">@prog.ToDisplayName()</option>
+                    }
+                </select>
+            </div>
+
+            <div class="option-group">
+                <label class="option-label">Your Name <span style="font-weight:400;color:var(--text-muted,#888)">(optional)</span></label>
+                <input class="field-input" type="text" placeholder="e.g. Alex" maxlength="50"
+                       @bind="_name" @bind:event="oninput" />
+            </div>
+
+            <div class="option-group">
+                <label class="option-label">Music Genre</label>
+                <div class="chip-list">
+                    @foreach (var g in Enum.GetValues<MusicGenre>())
+                    {
+                        <button class="chip @(State.SelectedMusicGenre == g ? "active" : "")"
+                                @onclick="() => State.SelectedMusicGenre = g">
+                            @g.ToDisplayName()
+                        </button>
+                    }
+                </div>
+            </div>
+        </section>
+
+        <!-- Generate button -->
+        <section style="display:flex; justify-content:center; margin: 1rem 0;">
+            <button class="btn-primary large" @onclick="GenerateAsync" disabled="@_busy">
+                @(_busy ? "🎵 Generating…" : "🎵 Generate Song")
+            </button>
+        </section>
+
+        <!-- Status / error -->
+        @if (_statusMessage is not null)
+        {
+            <div class="status-message">@_statusMessage</div>
+        }
+        @if (_error is not null)
+        {
+            <div class="alert-error">@_error</div>
+        }
+
+        <!-- Result -->
+        @if (_lyrics is not null)
+        {
+            <section class="result-section">
+                <h2>Your Career Anthem ✨</h2>
+
+                @if (_audioUrl is not null)
+                {
+                    <div style="margin-bottom:1rem">
+                        <p style="font-size:.85rem; color:var(--text-muted); text-align:center; margin:0 0 .5rem">
+                            @((_audioMimeType?.Contains("mpeg") ?? false)
+                                ? "🎸 Instrumental preview — Lyria"
+                                : "🎵 Audio preview — first verse")
+                        </p>
+                        <audio controls src="@_audioUrl"
+                               style="width:100%; border-radius:8px; margin-bottom:0.5rem" />
+                        <div class="result-actions">
+                            <a href="@_audioUrl"
+                               download="@((_audioMimeType?.Contains("mpeg") ?? false) ? "cptc-instrumental.mp3" : "cptc-song.wav")"
+                               class="btn-primary">
+                                ⬇️ Download Audio
+                            </a>
+                            <button class="btn-ghost" @onclick="Reset">🔄 Try Again</button>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="result-actions" style="margin-bottom:1rem">
+                        <button class="btn-ghost" @onclick="Reset">🔄 Try Again</button>
+                    </div>
+                    @if (_ttsError is not null)
+                    {
+                        @if (_ttsError.Contains("allowlist", StringComparison.OrdinalIgnoreCase))
+                        {
+                            <div style="font-size:.85rem; color:var(--text-muted); margin-bottom:0.75rem; text-align:center">
+                                🎵 Audio synthesis requires Vertex AI allowlisting for your project — lyrics only.
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="alert-error">🔊 Audio error: @_ttsError</div>
+                        }
+                    }
+                    else if (_audioUnavailable)
+                    {
+                        <div style="font-size:.85rem; color:var(--text-muted); margin-bottom:0.75rem; text-align:center">
+                            🎵 Audio unavailable — enjoy the lyrics below!
+                        </div>
+                    }
+                }
+
+                <div class="card" style="text-align:left">
+                    <pre style="white-space:pre-wrap; font-family:inherit; margin:0; line-height:1.6; color:var(--text-primary)">@_lyrics</pre>
+                </div>
+            </section>
+        }
+    </div>
+}
+
+@code {
+    private string? _lyrics;
+    private string? _audioUrl;
+    private string? _audioMimeType;
+    private string? _statusMessage;
+    private string? _error;
+    private string? _ttsError;
+    private bool    _busy;
+    private bool    _credentialsStored;
+    private bool    _audioUnavailable;
+    private string  _name = string.Empty;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _credentialsStored = await Crypto.LoadSettingsAsync() is not null;
+    }
+
+    private async Task GenerateAsync()
+    {
+        _lyrics           = null;
+        _error            = null;
+        _ttsError         = null;
+        _audioMimeType    = null;
+        _audioUnavailable = false;
+        _busy            = true;
+
+        // Revoke any previous blob URL
+        if (_audioUrl is not null)
+        {
+            await JS.InvokeVoidAsync("cptcInterop.revokeBlobUrl", _audioUrl);
+            _audioUrl = null;
+        }
+
+        try
+        {
+            _statusMessage = "✍️ Writing lyrics…";
+            StateHasChanged();
+
+            var (lyrics, audioBase64, audioMimeType, ttsError) =
+                await AI.GenerateSongAsync(State.SelectedMusicGenre, State.SelectedProgram, _name.Trim());
+
+            _lyrics   = lyrics;
+            _ttsError = ttsError;
+
+            if (audioBase64 is not null)
+            {
+                _statusMessage = "🔊 Building audio…";
+                StateHasChanged();
+
+                _audioMimeType = audioMimeType;
+                if (audioMimeType.Contains("mpeg", StringComparison.OrdinalIgnoreCase) ||
+                    audioMimeType.Contains("mp3",  StringComparison.OrdinalIgnoreCase))
+                {
+                    _audioUrl = await JS.InvokeAsync<string>(
+                        "cptcInterop.base64ToBlobUrl", audioBase64, audioMimeType);
+                }
+                else
+                {
+                    var sampleRate = ParseSampleRate(audioMimeType);
+                    _audioUrl = await JS.InvokeAsync<string>(
+                        "cptcInterop.pcmToWavBlobUrl", audioBase64, sampleRate, 1, 16);
+                }
+            }
+            else
+            {
+                _audioUnavailable = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Something went wrong: {ex.Message}";
+        }
+        finally
+        {
+            _statusMessage = null;
+            _busy          = false;
+        }
+    }
+
+    private void Reset()
+    {
+        _lyrics           = null;
+        _error            = null;
+        _ttsError         = null;
+        _audioUnavailable = false;
+        _audioMimeType    = null;
+        // Keep _audioUrl alive until next generate or dispose so the player doesn't break mid-listen
+    }
+
+    private static int ParseSampleRate(string mimeType)
+    {
+        var idx = mimeType.IndexOf("rate=", StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0)
+        {
+            var rateStr = mimeType[(idx + 5)..].Split(';')[0].Trim();
+            if (int.TryParse(rateStr, out var rate)) return rate;
+        }
+        return 24000;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_audioUrl is not null)
+            await JS.InvokeVoidAsync("cptcInterop.revokeBlobUrl", _audioUrl);
+    }
+}

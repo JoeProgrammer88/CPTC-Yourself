@@ -20,6 +20,7 @@ public class AppStateService
     public CptcProgram SelectedProgram { get; set; } = CptcProgram.ManufacturingEngineeringTechnologies;
     public ArtStyle SelectedStyle { get; set; } = ArtStyle.Cartoon;
     public ArtGenre SelectedGenre { get; set; } = ArtGenre.Inspirational;
+    public MusicGenre SelectedMusicGenre { get; set; } = MusicGenre.Pop;
 
     public void SetCredentials(string decryptedSecret, ApiProvider provider,
                                string vertexProjectId = "", string vertexLocation = "us-central1")
