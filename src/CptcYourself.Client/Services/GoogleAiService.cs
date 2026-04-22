@@ -10,14 +10,14 @@ namespace CptcYourself.Client.Services;
 /// <summary>
 /// Calls Google AI Studio or Vertex AI to produce a career-inspiration image.
 ///
-/// AI Studio  → single-step: Gemini 2.5 Flash native image generation
-///              (responseModalities: ["IMAGE"]; webcam photo fed directly in)
-///
-/// Vertex AI  → two-step: Gemini generates a rich image prompt from the photo,
-///              then Imagen 3 (capability model) renders the image using the
-///              webcam photo as a SUBJECT reference so the person's face and
-///              likeness appear in the output.
-///              (Vertex AI does not yet support Gemini multi-modal output.)
+/// Both providers use a two-step pipeline:
+///   Step 1 – Gemini (text) analyzes the webcam photo and produces a precise
+///             artist's description of the subject's appearance.
+///   Step 2 – The image is generated using that description to anchor likeness:
+///     AI Studio  → Gemini 2.5 Flash native image generation via multi-turn
+///                  context (photo + description → image output).
+///     Vertex AI  → Imagen 3 capability model with the photo as a SUBJECT
+///                  reference image (Vertex doesn't support Gemini image output).
 /// </summary>
 public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService state)
 {
@@ -26,39 +26,53 @@ public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService sta
     // imagen-3.0-generate-002 does not.
     private const string ImagenModel = "imagen-3.0-capability-001";
 
-    public Task<string> GenerateCareerImageAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program) =>
+    public Task<(string ImageBase64, string Prompt)> GenerateCareerImageAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program) =>
         state.Provider == ApiProvider.VertexAi
             ? GenerateCareerImageVertexAsync(photoBase64, style, genre, program)
             : GenerateCareerImageAiStudioAsync(photoBase64, style, genre, program);
 
-    // ── AI Studio: single-step Gemini native image generation ─────────────────
+    // ── AI Studio: two-step Gemini (analyze → image) ──────────────────────────
 
-    private async Task<string> GenerateCareerImageAiStudioAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
+    private async Task<(string ImageBase64, string Prompt)> GenerateCareerImageAiStudioAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
     {
-        var body = BuildGeminiImageRequestBody(photoBase64, style, genre, program);
-        var url  = $"https://generativelanguage.googleapis.com/v1beta/models/{GeminiModel}:generateContent?key={state.PlainTextApiKey}";
+        var baseUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{GeminiModel}:generateContent?key={state.PlainTextApiKey}";
 
-        var response = await http.PostAsJsonAsync(url, body);
-        await EnsureSuccessAsync(response, "Gemini (image generation)");
-        return await ParseGeminiImageResponseAsync(response);
+        // Step 1 – extract a precise description of the subject from the photo
+        var analyzeBody = BuildAnalyzePersonBody(photoBase64);
+        var analyzeResp = await http.PostAsJsonAsync(baseUrl, analyzeBody);
+        await EnsureSuccessAsync(analyzeResp, "Gemini (subject analysis)");
+        var personDescription = await ParseGeminiTextResponseAsync(analyzeResp);
+
+        // Step 2 – generate the career image using a multi-turn context that
+        //          includes both the photo and the committed description
+        var imageBody = BuildAiStudioImageBody(photoBase64, personDescription, style, genre, program);
+        var imageResp = await http.PostAsJsonAsync(baseUrl, imageBody);
+        await EnsureSuccessAsync(imageResp, "Gemini (image generation)");
+        var imageBase64 = await ParseGeminiImageResponseAsync(imageResp);
+
+        var promptSummary =
+            $"[Subject analysis]\n{personDescription}\n\n" +
+            $"[Scene]\n{style.ToDisplayName()} {genre.ToDisplayName()} image of the person above " +
+            $"depicted as a {program.ToDisplayName()} professional: {program.ToSceneDescription()}.";
+        return (imageBase64, promptSummary);
     }
 
     // ── Vertex AI: two-step Gemini prompt → Imagen 3 ─────────────────────────
 
-    private async Task<string> GenerateCareerImageVertexAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
+    private async Task<(string ImageBase64, string Prompt)> GenerateCareerImageVertexAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
     {
-        // Step 1 – ask Gemini to craft a detailed image prompt from the photo
-        var promptBody = BuildGeminiPromptRequestBody(photoBase64, style, genre, program);
-        var promptUrl  = $"https://{state.VertexLocation}-aiplatform.googleapis.com/v1/projects/{state.VertexProjectId}" +
-                         $"/locations/{state.VertexLocation}/publishers/google/models/{GeminiModel}:generateContent";
+        var geminiUrl = $"https://{state.VertexLocation}-aiplatform.googleapis.com/v1/projects/{state.VertexProjectId}" +
+                        $"/locations/{state.VertexLocation}/publishers/google/models/{GeminiModel}:generateContent";
 
-        var promptReq  = await BuildVertexRequestAsync(promptUrl, promptBody);
+        // Step 1 – Gemini analyzes the subject and writes an Imagen-optimised prompt
+        var promptBody = BuildVertexPromptRequestBody(photoBase64, style, genre, program);
+        var promptReq  = await BuildVertexRequestAsync(geminiUrl, promptBody);
         var promptResp = await http.SendAsync(promptReq);
         await EnsureSuccessAsync(promptResp, "Gemini via Vertex (prompt generation)");
         var imagePrompt = await ParseGeminiTextResponseAsync(promptResp);
 
-        // Step 2 – render with Imagen 3, using the webcam photo as a subject
-        //           reference so the output depicts the actual person
+        // Step 2 – Imagen 3 renders the image using the prompt AND the photo as
+        //          a SUBJECT reference so the person's likeness is preserved
         var imagenBody = BuildImagenSubjectRequestBody(imagePrompt, photoBase64);
         var imagenUrl  = $"https://{state.VertexLocation}-aiplatform.googleapis.com/v1/projects/{state.VertexProjectId}" +
                          $"/locations/{state.VertexLocation}/publishers/google/models/{ImagenModel}:predict";
@@ -66,7 +80,8 @@ public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService sta
         var imagenReq  = await BuildVertexRequestAsync(imagenUrl, imagenBody);
         var imagenResp = await http.SendAsync(imagenReq);
         await EnsureSuccessAsync(imagenResp, "Imagen via Vertex (image generation)");
-        return await ParseImagenResponseAsync(imagenResp);
+        var imageBase64 = await ParseImagenResponseAsync(imagenResp);
+        return (imageBase64, imagePrompt);
     }
 
     private async Task<HttpRequestMessage> BuildVertexRequestAsync(string url, object body)
@@ -84,90 +99,151 @@ public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService sta
     // ── Request builders ──────────────────────────────────────────────────────
 
     /// <summary>
-    /// AI Studio request body: asks Gemini to output an image directly.
-    /// responseModalities: ["IMAGE"] is not supported on Vertex AI.
+    /// Step 1 (both providers): ask Gemini to produce a precise artist's brief
+    /// describing the subject's appearance from the webcam photo.
     /// </summary>
-    private static object BuildGeminiImageRequestBody(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
+    private static object BuildAnalyzePersonBody(string photoBase64) => new
     {
-        var systemInstruction =
-            "You are a career-inspiration artist for the Center for Precision Technology and " +
-            "Careers (CPTC). Using the person's face and likeness from the provided photo, " +
-            "generate a vivid image that faithfully depicts this specific person thriving in a " +
-            $"{program.ToDisplayName()} career. " +
-            $"Render the image in a {style.ToDisplayName()} art style with a {genre.ToDisplayName()} tone. " +
-            "Show a realistic, detailed professional environment appropriate for that program " +
-            "(e.g. the tools, machinery, screens, or lab setting a graduate would work in). " +
-            "Preserve the person's facial features and likeness. " +
-            "Capture a strong sense of pride, confidence, and accomplishment.";
-
-        return new
+        contents = new[]
         {
-            system_instruction = new { parts = new[] { new { text = systemInstruction } } },
-            contents = new[]
+            new
             {
-                new
+                role  = "user",
+                parts = new object[]
                 {
-                    role  = "user",
-                    parts = new object[]
+                    new { inline_data = new { mime_type = "image/jpeg", data = photoBase64 } },
+                    new
                     {
-                        new { inline_data = new { mime_type = "image/jpeg", data = photoBase64 } },
-                        new
-                        {
-                            text = $"Generate a {style.ToDisplayName()} career image showing this person " +
-                                   $"working in the {program.ToDisplayName()} field."
-                        }
+                        text =
+                            "You are an artist's assistant. Study the main person in this photo and " +
+                            "write a precise, detailed physical description that an artist could use to " +
+                            "draw or paint this exact person. Cover: approximate age, gender presentation, " +
+                            "skin tone, hair colour and style, eye colour if visible, face shape, any " +
+                            "notable facial features, approximate build, and any distinctive characteristics. " +
+                            "Be specific and objective. Return ONLY the description — no preamble."
                     }
                 }
-            },
-            generationConfig = new
-            {
-                responseModalities = new[] { "IMAGE" },
-                temperature        = 1.0
             }
-        };
-    }
+        },
+        generationConfig = new { temperature = 0.2, maxOutputTokens = 300 }
+    };
 
     /// <summary>
-    /// Vertex AI request body: asks Gemini to write a detailed image-gen prompt
-    /// (text only — no responseModalities) that Imagen 3 will render.
+    /// AI Studio Step 2: multi-turn Gemini request that includes the photo,
+    /// the committed subject description, and asks for native image output.
     /// </summary>
-    private static object BuildGeminiPromptRequestBody(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program)
+    private static object BuildAiStudioImageBody(string photoBase64, string personDescription, ArtStyle style, ArtGenre genre, CptcProgram program) => new
     {
-        var systemInstruction =
-            "You are a creative director specialising in career-inspiration artwork for the " +
-            "Center for Precision Technology and Careers (CPTC). " +
-            "Given a photo of a person and their chosen program of study, write a vivid " +
-            "image-generation prompt that shows that specific person thriving in a career " +
-            $"related to the '{program.ToDisplayName()}' program. " +
-            $"The prompt must specify the '{style.ToDisplayName()}' art style and '{genre.ToDisplayName()}' genre, " +
-            "describe the exact professional environment (tools, machinery, screens, or lab), " +
-            "include the person's notable physical features from the photo (hair colour, " +
-            "approximate age, distinguishing features) so the image closely resembles them, " +
-            "and convey pride and accomplishment. " +
-            "Return ONLY the image-generation prompt — no preamble, no explanation.";
-
-        return new
+        system_instruction = new
         {
-            system_instruction = new { parts = new[] { new { text = systemInstruction } } },
-            contents = new[]
+            parts = new[]
             {
                 new
                 {
-                    role  = "user",
-                    parts = new object[]
-                    {
-                        new { inline_data = new { mime_type = "image/jpeg", data = photoBase64 } },
-                        new
-                        {
-                            text = $"Program: {program.ToDisplayName()}. Style: {style.ToDisplayName()}. " +
-                                   $"Genre: {genre.ToDisplayName()}. Write the image-generation prompt now."
-                        }
-                    }
+                    text =
+                        "You are a career-inspiration artist for the Center for Precision Technology " +
+                        "and Careers (CPTC). Your task is to composite the subject from a reference " +
+                        "photo into a vivid career scene. " +
+                        "Rules: (1) Extract the main person from the reference photo. " +
+                        "(2) Faithfully preserve every physical detail of their appearance — face, " +
+                        "hair, skin tone, build. Do NOT change their looks. " +
+                        $"(3) Place them into a scene where they are {program.ToSceneDescription()}. " +
+                        $"(4) Render entirely in {style.ToDisplayName()} art style, {genre.ToDisplayName()} tone. " +
+                        "(5) The person should be the clear, confident focal point of the image."
+                }
+            }
+        },
+        contents = new object[]
+        {
+            // Turn 1 – user submits the photo
+            new
+            {
+                role  = "user",
+                parts = new object[]
+                {
+                    new { inline_data = new { mime_type = "image/jpeg", data = photoBase64 } },
+                    new { text = "Here is the reference photo of the subject." }
                 }
             },
-            generationConfig = new { temperature = 1.0, maxOutputTokens = 512 }
-        };
-    }
+            // Turn 2 – model acknowledges with the committed description
+            new
+            {
+                role  = "model",
+                parts = new[] { new { text = $"Understood. Subject description: {personDescription}" } }
+            },
+            // Turn 3 – user requests the career image, photo included again so it
+            //          is the direct visual input at generation time
+            new
+            {
+                role  = "user",
+                parts = new object[]
+                {
+                    new { inline_data = new { mime_type = "image/jpeg", data = photoBase64 } },
+                    new
+                    {
+                        text =
+                            $"Using this photo and the subject description above, generate a " +
+                            $"{style.ToDisplayName()}, {genre.ToDisplayName()} career image of this exact " +
+                            $"person working as a {program.ToDisplayName()} professional at CPTC. " +
+                            $"Show them {program.ToSceneDescription()}. " +
+                            "Preserve their face, hair, skin tone, and build exactly as shown in the photo."
+                    }
+                }
+            }
+        },
+        generationConfig = new
+        {
+            responseModalities = new[] { "IMAGE" },
+            temperature        = 1.0
+        }
+    };
+
+    /// <summary>
+    /// Vertex AI Step 1: Gemini writes an Imagen-optimised prompt that includes
+    /// the subject's physical features extracted from the photo.
+    /// </summary>
+    private static object BuildVertexPromptRequestBody(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program) => new
+    {
+        system_instruction = new
+        {
+            parts = new[]
+            {
+                new
+                {
+                    text =
+                        "You are an expert Imagen 3 prompt engineer for the Center for Precision " +
+                        "Technology and Careers (CPTC). Given a photo of a person, write a single " +
+                        "highly detailed image-generation prompt that will produce a career-inspiration " +
+                        "image of that specific person. " +
+                        "Prompt structure rules: " +
+                        $"(1) Open with the art style: '{style.ToDisplayName()} style, {genre.ToDisplayName()} tone'. " +
+                        "(2) Describe the subject using exact physical details observed from the photo " +
+                        "(age, gender, skin tone, hair colour/style, face shape, build). " +
+                        $"(3) Place them in this scene: {program.ToSceneDescription()}. " +
+                        "(4) End with lighting/mood: 'cinematic lighting, sharp focus, high detail, " +
+                        "professional composition, conveying pride and accomplishment'. " +
+                        "Return ONLY the prompt — no preamble, no explanation."
+                }
+            }
+        },
+        contents = new[]
+        {
+            new
+            {
+                role  = "user",
+                parts = new object[]
+                {
+                    new { inline_data = new { mime_type = "image/jpeg", data = photoBase64 } },
+                    new
+                    {
+                        text = $"Program: {program.ToDisplayName()}. Style: {style.ToDisplayName()}. " +
+                               $"Genre: {genre.ToDisplayName()}. Write the Imagen prompt now."
+                    }
+                }
+            }
+        },
+        generationConfig = new { temperature = 0.4, maxOutputTokens = 400 }
+    };
 
     /// <summary>
     /// Imagen 3 capability model request with the webcam photo as a SUBJECT
