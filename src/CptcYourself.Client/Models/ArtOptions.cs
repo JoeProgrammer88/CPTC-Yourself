@@ -23,6 +23,20 @@ public enum ArtGenre
     Professional
 }
 
+public enum MusicGenre
+{
+    Rap,
+    Rock,
+    Country,
+    Pop,
+    RnB,
+    Jazz,
+    HipHop,
+    Electronic,
+    Folk,
+    Metal
+}
+
 public enum CptcProgram
 {
     ComputerProgramming,
@@ -147,5 +161,20 @@ public static class ArtEnumExtensions
         ArtGenre.Fantasy       => "Fantasy",
         ArtGenre.Professional  => "Professional",
         _                      => genre.ToString()
+    };
+
+    public static string ToDisplayName(this MusicGenre genre) => genre switch
+    {
+        MusicGenre.Rap        => "Rap",
+        MusicGenre.Rock       => "Rock",
+        MusicGenre.Country    => "Country",
+        MusicGenre.Pop        => "Pop",
+        MusicGenre.RnB        => "R&B",
+        MusicGenre.Jazz       => "Jazz",
+        MusicGenre.HipHop     => "Hip-Hop",
+        MusicGenre.Electronic => "Electronic",
+        MusicGenre.Folk       => "Folk",
+        MusicGenre.Metal      => "Metal",
+        _                     => genre.ToString()
     };
 }

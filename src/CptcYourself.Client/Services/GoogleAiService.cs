@@ -25,6 +25,7 @@ public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService sta
     // imagen-3.0-capability-001 supports subject/style reference images;
     // imagen-3.0-generate-002 does not.
     private const string ImagenModel = "imagen-3.0-capability-001";
+    private const string TtsModel    = "gemini-2.5-flash";
 
     public Task<(string ImageBase64, string Prompt)> GenerateCareerImageAsync(string photoBase64, ArtStyle style, ArtGenre genre, CptcProgram program) =>
         state.Provider == ApiProvider.VertexAi
@@ -333,5 +334,211 @@ public class GoogleAiService(HttpClient http, IJSRuntime js, AppStateService sta
         }
 
         throw new HttpRequestException($"{step} failed ({(int)response.StatusCode}): {detail}");
+    }
+
+    // ── Song generation ───────────────────────────────────────────────────────
+
+    public Task<(string Lyrics, string? AudioBase64, string AudioMimeType)> GenerateSongAsync(
+        MusicGenre genre, CptcProgram program, string? name = null) =>
+        state.Provider == ApiProvider.VertexAi
+            ? GenerateSongVertexAsync(genre, program, name)
+            : GenerateSongAiStudioAsync(genre, program, name);
+
+    private async Task<(string Lyrics, string? AudioBase64, string AudioMimeType)> GenerateSongAiStudioAsync(
+        MusicGenre genre, CptcProgram program, string? name)
+    {
+        var textUrl = $"https://generativelanguage.googleapis.com/v1beta/models/{GeminiModel}:generateContent?key={state.PlainTextApiKey}";
+        var ttsUrl  = $"https://generativelanguage.googleapis.com/v1beta/models/{TtsModel}:generateContent?key={state.PlainTextApiKey}";
+
+        // Step 1 – generate lyrics with the text model
+        var lyricsResp = await http.PostAsJsonAsync(textUrl, BuildSongLyricsBody(genre, program, name));
+        await EnsureSuccessAsync(lyricsResp, "Gemini (lyrics generation)");
+        var lyrics = await ParseGeminiTextResponseAsync(lyricsResp);
+
+        // Step 2 – synthesize only the first verse via TTS (best-effort)
+        try
+        {
+            var firstVerse = ExtractFirstVerse(lyrics);
+            var ttsResp = await http.PostAsJsonAsync(ttsUrl, BuildTtsSongBody(firstVerse, genre));
+            if (ttsResp.IsSuccessStatusCode)
+            {
+                var (audioBase64, mimeType) = await ParseGeminiAudioResponseAsync(ttsResp);
+                return (lyrics, audioBase64, mimeType);
+            }
+        }
+        catch { /* TTS failure is non-fatal — return lyrics only */ }
+
+        return (lyrics, null, string.Empty);
+    }
+
+    private async Task<(string Lyrics, string? AudioBase64, string AudioMimeType)> GenerateSongVertexAsync(
+        MusicGenre genre, CptcProgram program, string? name)
+    {
+        var geminiUrl = $"https://{state.VertexLocation}-aiplatform.googleapis.com/v1/projects/{state.VertexProjectId}" +
+                        $"/locations/{state.VertexLocation}/publishers/google/models/{GeminiModel}:generateContent";
+        var ttsUrl    = $"https://{state.VertexLocation}-aiplatform.googleapis.com/v1/projects/{state.VertexProjectId}" +
+                        $"/locations/{state.VertexLocation}/publishers/google/models/{TtsModel}:generateContent";
+
+        // Step 1 – generate lyrics
+        var lyricsReq  = await BuildVertexRequestAsync(geminiUrl, BuildSongLyricsBody(genre, program, name));
+        var lyricsResp = await http.SendAsync(lyricsReq);
+        await EnsureSuccessAsync(lyricsResp, "Gemini via Vertex (lyrics generation)");
+        var lyrics = await ParseGeminiTextResponseAsync(lyricsResp);
+
+        // Step 2 – synthesize only the first verse via TTS (best-effort)
+        try
+        {
+            var firstVerse = ExtractFirstVerse(lyrics);
+            var ttsReq  = await BuildVertexRequestAsync(ttsUrl, BuildTtsSongBody(firstVerse, genre));
+            var ttsResp = await http.SendAsync(ttsReq);
+            if (ttsResp.IsSuccessStatusCode)
+            {
+                var (audioBase64, mimeType) = await ParseGeminiAudioResponseAsync(ttsResp);
+                return (lyrics, audioBase64, mimeType);
+            }
+        }
+        catch { /* TTS failure is non-fatal */ }
+
+        return (lyrics, null, string.Empty);
+    }
+
+    /// <summary>
+    /// Extracts the first labelled section (e.g. [Verse 1]) from the lyrics.
+    /// Falls back to the first non-empty paragraph if no section header is found.
+    /// </summary>
+    private static string ExtractFirstVerse(string lyrics)
+    {
+        var lines = lyrics.Split('\n');
+        var section = new List<string>();
+        bool inSection = false;
+
+        foreach (var line in lines)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith('['))
+            {
+                if (inSection && section.Count > 0) break; // end of first section
+                inSection = true;
+                continue; // skip the header line itself
+            }
+            if (inSection)
+            {
+                if (trimmed.Length == 0 && section.Count > 0) break; // blank line ends section
+                if (trimmed.Length > 0) section.Add(trimmed);
+            }
+        }
+
+        return section.Count > 0
+            ? string.Join('\n', section)
+            : string.Join('\n', lines.Take(8)); // fallback: first 8 lines
+    }
+
+    private static object BuildSongLyricsBody(MusicGenre genre, CptcProgram program, string? name) => new
+    {
+        system_instruction = new
+        {
+            parts = new[]
+            {
+                new
+                {
+                    text =
+                        "You are a professional songwriter. Write authentic, catchy song lyrics " +
+                        "that fit the requested genre and subject matter. " +
+                        "Format the lyrics with section headers like [Verse 1], [Chorus], [Verse 2], etc. " +
+                        "Return ONLY the lyrics — no preamble, no explanation, no commentary."
+                }
+            }
+        },
+        contents = new[]
+        {
+            new
+            {
+                role  = "user",
+                parts = new[]
+                {
+                    new
+                    {
+                        text =
+                            (string.IsNullOrWhiteSpace(name)
+                                ? $"Write a {genre.ToDisplayName()} song about being a {program.ToDisplayName()} student or professional at CPTC (Center for Precision Technology and Careers). "
+                                : $"Write a {genre.ToDisplayName()} song about {name}, a {program.ToDisplayName()} student or professional at CPTC (Center for Precision Technology and Careers). Mention their name naturally in the lyrics. ") +
+                            $"Activities in this field include: {program.ToSceneDescription()}. " +
+                            $"Make it motivational and authentic to the {genre.ToDisplayName()} style. " +
+                            "Structure: [Verse 1], [Chorus], [Verse 2], [Chorus], [Bridge], [Chorus]."
+                    }
+                }
+            }
+        },
+        generationConfig = new { temperature = 1.0, maxOutputTokens = 3000 }
+    };
+
+    private static object BuildTtsSongBody(string lyrics, MusicGenre genre) => new
+    {
+        contents = new[]
+        {
+            new
+            {
+                parts = new[]
+                {
+                    new
+                    {
+                        text =
+                            $"Perform the following {genre.ToDisplayName()} song lyrics " +
+                            $"with energy and style appropriate for {genre.ToDisplayName()} music:\n\n{lyrics}"
+                    }
+                }
+            }
+        },
+        generationConfig = new
+        {
+            responseModalities = new[] { "AUDIO" },
+            speechConfig       = new
+            {
+                voiceConfig = new
+                {
+                    prebuiltVoiceConfig = new { voiceName = GetVoiceForGenre(genre) }
+                }
+            }
+        }
+    };
+
+    private static string GetVoiceForGenre(MusicGenre genre) => genre switch
+    {
+        MusicGenre.Rap        => "Puck",
+        MusicGenre.HipHop     => "Puck",
+        MusicGenre.Electronic => "Puck",
+        MusicGenre.Rock       => "Charon",
+        MusicGenre.Metal      => "Charon",
+        MusicGenre.Country    => "Kore",
+        MusicGenre.Folk       => "Kore",
+        MusicGenre.Jazz       => "Fenrir",
+        MusicGenre.Pop        => "Aoede",
+        MusicGenre.RnB        => "Aoede",
+        _                     => "Kore"
+    };
+
+    private static async Task<(string AudioBase64, string MimeType)> ParseGeminiAudioResponseAsync(
+        HttpResponseMessage response)
+    {
+        using var doc   = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var       parts = doc.RootElement
+                             .GetProperty("candidates")[0]
+                             .GetProperty("content")
+                             .GetProperty("parts");
+
+        foreach (var part in parts.EnumerateArray())
+        {
+            if (part.TryGetProperty("inlineData", out var inlineData))
+            {
+                var data     = inlineData.GetProperty("data").GetString()
+                               ?? throw new InvalidOperationException("Empty audio bytes in Gemini TTS response.");
+                var mimeType = inlineData.TryGetProperty("mimeType", out var mt)
+                               ? mt.GetString() ?? "audio/pcm"
+                               : "audio/pcm";
+                return (data, mimeType);
+            }
+        }
+
+        throw new InvalidOperationException("Gemini TTS returned no audio in its response.");
     }
 }
